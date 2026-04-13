@@ -11,6 +11,7 @@ from pathlib import Path
 
 import gradio as gr
 import torch
+from PIL import Image
 
 from src.generate import build_pipeline, load_prompts
 
@@ -46,7 +47,20 @@ def sample_and_generate(
         return_dict=False,
     )[0]
 
-    return images, prompt
+    # Create green-background versions to visualize transparency
+    green_images = []
+    # Alpha mask: white = opaque, black = transparent
+    alpha_images = []
+    for img in images:
+        alpha = img.split()[3]
+
+        green_bg = Image.new("RGBA", img.size, (0, 255, 0, 255))
+        green_bg.paste(img, mask=alpha)
+        green_images.append(green_bg.convert("RGB"))
+
+        alpha_images.append(alpha.convert("RGB"))
+
+    return images, green_images, alpha_images, prompt
 
 
 def run_ui(args):
@@ -57,10 +71,10 @@ def run_ui(args):
     print(f"Loaded {len(prompts)} prompts from {args.prompts}")
 
     def on_generate(batch_size, steps, negative_prompt, width, height):
-        images, prompt = sample_and_generate(
+        images, green_images, alpha_images, prompt = sample_and_generate(
             int(batch_size), int(steps), negative_prompt, int(width), int(height),
         )
-        return prompt, images
+        return prompt, images, green_images, alpha_images
 
     with gr.Blocks(title="SealKey — LayerDiffusion Test") as demo:
         gr.Markdown("# SealKey — LayerDiffusion Test\nSample a random prompt and generate transparent images.")
@@ -79,12 +93,14 @@ def run_ui(args):
 
         generate_btn = gr.Button("Generate", variant="primary", size="lg")
         prompt_display = gr.Textbox(label="Sampled prompt", interactive=False)
-        gallery = gr.Gallery(label="Generated images", columns=4, height="auto")
+        gallery = gr.Gallery(label="Original (RGBA)", columns=4, height="auto")
+        green_gallery = gr.Gallery(label="Green background", columns=4, height="auto")
+        alpha_gallery = gr.Gallery(label="Alpha mask (white=opaque, black=transparent)", columns=4, height="auto")
 
         generate_btn.click(
             fn=on_generate,
             inputs=[batch_size, steps, negative_prompt, width, height],
-            outputs=[prompt_display, gallery],
+            outputs=[prompt_display, gallery, green_gallery, alpha_gallery],
         )
 
     demo.launch(server_name="0.0.0.0", server_port=args.port)

@@ -12,6 +12,7 @@ dependencies = [
     "einops",
     "opencv-python",
     "tqdm",
+    "peft",
     "gradio>=4.0",
 ]
 
