@@ -1,407 +1,279 @@
 {
-  "template": "{quality} {medium} of {subject}{hair}{clothing}{accessory}, {action}{prop}{atmosphere}, {lighting}",
+  "quality": [
+    "high quality", "detailed", "high resolution",
+    "studio photo", "professional photo", "DSLR photo"
+  ],
 
-  "quality": {
-    "professional": {
-      "weight": 70,
-      "items": [
-        "professional photo", "high quality photo", "studio photo", "DSLR photo",
-        "high resolution photo", "sharp detailed photo", "professional studio photo",
-        "crisp photo", "clean professional photo", "well-lit photo"
+  "challenges": {
+    "fine_hair": {
+      "weight": 12,
+      "description": "Fine/wispy/flyaway hair — sub-pixel or semi-transparent strands",
+      "prompts": [
+        "a woman with fine wispy blonde hair",
+        "a man with flyaway hair",
+        "a child with thin wispy white hair",
+        "a woman with baby hairs around the forehead",
+        "an elderly woman with very fine thin hair",
+        "a person with a halo of backlit flyaway hair",
+        "a woman with loose curls cascading everywhere",
+        "a man with wild windblown hair",
+        "a woman with frazzled unkempt hair",
+        "a person with hair flying in all directions",
+        "a girl with tangled windswept hair",
+        "a woman with cotton candy textured hair",
+        "a dancer with hair caught mid-motion",
+        "a man with static-charged hair standing up",
+        "a woman with feathery layered hair",
+        "a person with very long wavy hair blowing in the wind",
+        "a woman with frizzy curly hair",
+        "an elderly man with thin wispy white hair",
+        "a young woman with messy bedhead hair",
+        "a person with wild untamed hair",
+        "a woman with long flowing silver hair",
+        "a man with a massive curly afro",
+        "a woman with big voluminous curly hair",
+        "a child with fine windblown hair"
       ]
     },
-    "amateur": {
-      "weight": 20,
-      "items": [
-        "phone photo", "amateur photo", "webcam capture", "phone camera photo",
-        "low budget photo", "handheld camera photo", "consumer camera photo",
-        "point and shoot photo", "grainy photo", "home studio photo"
+
+    "light_hair": {
+      "weight": 8,
+      "description": "Blonde/white/light-colored hair — low contrast, color bleed prone",
+      "prompts": [
+        "a woman with platinum blonde hair",
+        "an elderly man with white hair",
+        "a child with light blonde hair",
+        "a woman with silver hair",
+        "an elderly woman with gray hair",
+        "a man with bleached white hair",
+        "a young woman with ash blonde hair",
+        "a person with pale golden hair",
+        "a woman with white-blonde hair in sunlight",
+        "an elderly person with thin white hair",
+        "a child with strawberry blonde hair",
+        "a man with light gray hair",
+        "a woman with icy blonde hair",
+        "a teenager with bleached blonde hair"
       ]
     },
-    "cinematic": {
+
+    "transparent_objects": {
       "weight": 10,
-      "items": [
-        "cinematic still", "film still", "4K screenshot", "movie screenshot",
-        "cinematic frame", "broadcast still", "TV screenshot",
-        "high budget film still", "production still", "commercial still"
-      ]
-    }
-  },
-
-  "medium": {
-    "probability": 0.10,
-    "items": [
-      "portrait", "full body shot", "medium shot", "close-up", "headshot",
-      "three quarter shot", "bust shot", "upper body shot", "half body shot",
-      "wide shot", "tight shot", "extreme close-up"
-    ]
-  },
-
-  "subject": {
-    "people": {
-      "weight": 70,
-      "items": [
-        "a woman", "a man", "a young woman", "a young man", "a person",
-        "a child", "a teenager", "two people", "a couple",
-        "an elderly man", "an elderly woman", "a dancer",
-        "a businessman", "a businesswoman", "a chef", "a musician",
-        "a singer", "an athlete", "a martial artist", "a boxer",
-        "a gymnast", "a surgeon", "a soldier", "a firefighter",
-        "a scientist in a lab coat", "a construction worker", "a model",
-        "a news anchor", "a teacher", "a yoga instructor",
-        "a basketball player", "a skateboarder", "a cyclist",
-        "a guitarist", "a drummer", "a violinist", "a DJ", "a painter",
-        "a waiter", "a nurse", "a doctor", "a mechanic", "a bride",
-        "a groom", "a ballerina", "a magician", "a clown",
-        "a superhero cosplayer", "a medieval knight cosplayer",
-        "a samurai cosplayer", "a cowboy", "a pirate cosplayer"
+      "description": "Glass, water, crystal, clear plastic",
+      "prompts": [
+        "a glass of water",
+        "a glass of wine",
+        "a crystal ball",
+        "a glass vase with flowers",
+        "a wine glass",
+        "a glass bottle",
+        "a glass pitcher",
+        "a clear glass teapot",
+        "a fishbowl with a fish",
+        "a snow globe",
+        "a glass chess piece",
+        "a crystal chandelier",
+        "a glass sculpture",
+        "a pair of eyeglasses",
+        "a clear glass ornament",
+        "a glass jar",
+        "a terrarium",
+        "a glass perfume bottle",
+        "a prism refracting light",
+        "a cocktail in a clear glass",
+        "a person holding a glass of water",
+        "a woman holding a clear umbrella",
+        "a person behind a glass window",
+        "a man holding a glass orb"
       ]
     },
-    "animals": {
+
+    "reflective_surfaces": {
+      "weight": 8,
+      "description": "Mirrors, chrome, glossy metal, eyeglasses, sequins",
+      "prompts": [
+        "a person wearing mirrored sunglasses",
+        "a chrome robot figurine",
+        "a polished silver plate",
+        "a shiny chrome kettle",
+        "a woman wearing aviator sunglasses",
+        "a man wearing reflective sunglasses",
+        "a diamond ring",
+        "a person holding a mirror",
+        "a trophy on a table",
+        "a person with a reflective visor",
+        "a woman wearing chrome jewelry",
+        "a person wearing glasses",
+        "a metallic sculpture",
+        "a man in a sequined jacket",
+        "a woman wearing a rhinestone tiara",
+        "a polished sword",
+        "a shiny metal helmet",
+        "a person with metallic face paint"
+      ]
+    },
+
+    "sheer_fabrics": {
       "weight": 10,
-      "items": [
-        "a cat", "a dog", "a kitten", "a puppy", "a golden retriever",
-        "a persian cat", "a long-haired cat", "a fluffy dog", "a poodle",
-        "a german shepherd", "a husky", "a collie", "a bird", "a parrot",
-        "a cockatoo", "an owl", "a hawk", "a horse", "a rabbit",
-        "a hamster", "a ferret", "a lizard", "a chameleon", "a snake",
-        "a tarantula", "a butterfly", "a moth", "a chicken", "a rooster",
-        "a peacock", "a fox"
+      "description": "Semi-transparent fabrics — tulle, lace, mesh, chiffon, veils",
+      "prompts": [
+        "a bride wearing a lace veil",
+        "a woman in a tulle skirt",
+        "a person in a sheer blouse",
+        "a dancer in a chiffon gown",
+        "a woman wearing a mesh top",
+        "a bride in a tulle wedding dress",
+        "a woman in a sheer overlay dress",
+        "a person wearing a translucent raincoat",
+        "a woman behind a sheer curtain",
+        "a woman wearing a net shawl",
+        "a person wearing a cobweb lace shawl",
+        "a dancer in a gossamer costume",
+        "a woman in a sheer lace dress",
+        "a person wearing a transparent plastic jacket",
+        "a woman in a costume with translucent fabric panels",
+        "a bride with a long flowing veil",
+        "a woman wearing a beaded see-through top",
+        "a sheer curtain in a window"
       ]
     },
-    "objects": {
-      "weight": 20,
-      "items": [
-        "a wine glass", "a glass vase with flowers", "a crystal chandelier",
-        "a sheer curtain", "a potted plant", "a small tree", "a fern",
-        "a bouquet of flowers", "a car", "a motorcycle", "a bicycle",
-        "a chair", "a lamp", "a candelabra", "a glass bottle",
-        "a glass pitcher", "a crystal ball", "a snow globe", "a fishbowl",
-        "a terrarium", "a glass sculpture", "a glass chess set",
-        "a transparent mannequin", "a pair of eyeglasses on a stand",
-        "a prism", "a diamond ring", "a jewelry display", "a trophy",
-        "a musical instrument", "a guitar", "a violin", "a trumpet",
-        "a stack of books", "a vintage camera", "a laptop",
-        "a glass of water", "a glass of wine", "a cocktail", "a beer glass",
-        "a coffee pot", "a teapot", "a ceramic vase", "a metal sculpture",
-        "a chrome robot figurine", "a shiny kettle", "a polished silver plate"
-      ]
-    }
-  },
 
-  "hair": {
-    "probability": 0.80,
-    "people_only": true,
-    "easy": {
-      "weight": 30,
-      "items": [
-        "with short hair", "with a buzz cut", "with slicked back hair",
-        "with a crew cut", "bald", "with a shaved head", "wearing a beanie",
-        "wearing a hat", "wearing a cap", "wearing a helmet",
-        "wearing a headband", "with a tight bun", "with a very short pixie cut",
-        "with cornrows", "with a tight ponytail", "with a short mohawk",
-        "with a flat top", "with cropped hair", "with gelled hair",
-        "with a swim cap"
+    "fuzzy_fibrous": {
+      "weight": 8,
+      "description": "Fur, feathers, mohair, fringe, feather boas",
+      "prompts": [
+        "a woman wearing a fur coat",
+        "a person in a feather boa",
+        "a woman in a fuzzy mohair sweater",
+        "a person wearing a fringe jacket",
+        "a woman in a fluffy faux fur jacket",
+        "a person wearing a feathered headdress",
+        "a woman wearing angel wings",
+        "a person in a feathered costume",
+        "a fluffy cat",
+        "a persian cat",
+        "a long-haired cat",
+        "a fluffy dog",
+        "a poodle",
+        "a collie",
+        "a cockatoo with raised crest",
+        "a peacock with spread tail",
+        "a woman in a heavily fringed outfit",
+        "a person wearing a feathered mask",
+        "an owl perched on a branch",
+        "a dandelion puff"
       ]
     },
-    "medium": {
-      "weight": 40,
-      "items": [
-        "with long straight hair", "with a ponytail", "with braids",
-        "with shoulder-length hair", "with a bob cut", "with wavy hair",
-        "with a side part", "with a low bun", "with a french braid",
-        "with dreadlocks", "with medium length curly hair",
-        "with a half-up hairstyle", "with pigtails", "with a messy bun",
-        "with chin-length hair", "with straight bangs", "with layered hair",
-        "with a middle part", "with a loose braid", "with a twisted updo",
-        "with a fishtail braid", "with two braids", "with a top knot",
-        "with hair tucked behind ears"
-      ]
-    },
-    "hard": {
-      "weight": 30,
-      "items": [
-        "with frizzy curly hair", "with wild windblown hair",
-        "with fine wispy blonde hair", "with an afro",
-        "with long flowing red hair", "with flyaway hair",
-        "with messy bedhead hair",
-        "with very long wavy hair blowing in the wind",
-        "with big voluminous curly hair", "with thin wispy white hair",
-        "with unruly frizzy hair", "with a lion's mane of curly hair",
-        "with long flowing silver hair",
-        "with extremely long hair past the waist",
-        "with hair flying in all directions",
-        "with baby hairs around the forehead",
-        "with static-charged hair standing up",
-        "with tangled windswept hair", "with feathery layered hair",
-        "with a massive curly afro", "with very fine thin hair",
-        "with wild untamed hair", "with cotton candy textured hair",
-        "with hair caught mid-motion",
-        "with loose curls cascading everywhere",
-        "with frazzled unkempt hair",
-        "with a halo of backlit flyaway hair"
-      ]
-    }
-  },
 
-  "clothing": {
-    "probability": 0.60,
-    "people_only": true,
-    "easy": {
-      "weight": 50,
-      "items": [
-        "wearing a suit", "wearing a t-shirt", "in a jacket",
-        "in casual clothes", "in a hoodie", "wearing a polo shirt",
-        "in a leather jacket", "wearing a button-down shirt",
-        "in a turtleneck", "wearing a vest", "in jeans and a shirt",
-        "wearing a blazer", "in a tank top", "wearing overalls",
-        "in athletic wear", "wearing a tracksuit", "in a uniform",
-        "wearing scrubs", "in a wetsuit", "wearing a puffer jacket"
+    "atmospheric": {
+      "weight": 8,
+      "description": "Smoke, fog, mist, rain, dust, steam, floating embers",
+      "prompts": [
+        "a person standing in fog",
+        "a woman with smoke around her",
+        "a man in light rain",
+        "a person in mist",
+        "a woman with steam rising around her",
+        "a person in a dusty room",
+        "a person with breath visible in cold air",
+        "a woman in morning fog",
+        "a person surrounded by floating embers",
+        "a man in thick fog",
+        "a person in drizzling rain",
+        "a woman with smoke drifting around her",
+        "a dog in light fog",
+        "a cat in misty light",
+        "a person in a sandstorm",
+        "a glass bottle with steam around it",
+        "a person with dust particles in the air"
       ]
     },
-    "medium": {
-      "weight": 30,
-      "items": [
-        "wearing a flowing dress", "in a long coat", "wearing a scarf",
-        "in a maxi skirt", "wearing a cape", "in a long cardigan",
-        "wearing a loose blouse", "in a pleated skirt", "wearing a kimono",
-        "in a bathrobe", "wearing a poncho", "in a trench coat",
-        "wearing a long shawl", "in a flowy sundress", "wearing a sari",
-        "in a graduation gown", "wearing a long skirt",
-        "in a billowing shirt", "wearing a wrap dress", "in a loose kaftan"
-      ]
-    },
-    "hard": {
-      "weight": 20,
-      "items": [
-        "wearing a sheer blouse", "in a tulle skirt", "wearing a lace veil",
-        "in a feathered costume", "wearing a fur coat", "in a mesh top",
-        "wearing a translucent raincoat", "in a sheer overlay dress",
-        "wearing a net shawl", "in a feather boa",
-        "wearing a gossamer fairy costume", "in a wedding veil",
-        "wearing a beaded see-through top", "in a fuzzy mohair sweater",
-        "wearing a fringe jacket", "in a sequined dress",
-        "wearing a tulle wedding dress", "in a chiffon gown",
-        "wearing a sheer lace dress", "in a fluffy faux fur jacket",
-        "wearing a transparent plastic jacket",
-        "in a heavily fringed outfit", "wearing a cobweb lace shawl",
-        "in a feathered headdress", "wearing angel wings",
-        "in a costume with translucent fabric panels"
-      ]
-    }
-  },
 
-  "accessory": {
-    "probability": 0.20,
-    "people_only": true,
-    "reflective": {
-      "weight": 33,
-      "items": [
-        "wearing glasses", "wearing sunglasses", "wearing a reflective visor",
-        "holding a mirror", "wearing mirrored sunglasses",
-        "wearing chrome jewelry", "with a reflective face shield",
-        "wearing a metallic headpiece", "holding a crystal ball",
-        "wearing a rhinestone tiara", "wearing aviator sunglasses",
-        "holding a polished sword", "wearing a sequin headband",
-        "with metallic face paint"
-      ]
-    },
-    "transparent": {
-      "weight": 33,
-      "items": [
-        "holding a glass", "holding a wine glass",
-        "holding a clear umbrella", "behind a sheer curtain",
-        "holding a glass orb", "looking through a magnifying glass",
-        "holding a glass bottle", "wearing a clear face shield",
-        "holding a transparent fan", "behind a transparent screen",
-        "holding a soap bubble wand with bubbles",
-        "holding a glass of water", "pouring water from a glass pitcher"
-      ]
-    },
-    "normal": {
-      "weight": 34,
-      "items": [
-        "wearing a necklace", "wearing earrings", "holding a microphone",
-        "carrying a bag", "holding a book", "wearing a watch",
-        "holding a phone", "wearing a tie", "holding flowers",
-        "carrying an umbrella", "wearing a backpack", "holding a camera",
-        "wearing a lanyard", "holding a pen", "wearing a badge",
-        "holding a coffee cup", "wearing gloves", "holding a tablet",
-        "wearing a belt", "holding a cane"
-      ]
-    }
-  },
-
-  "action": {
-    "static": {
-      "weight": 50,
-      "items": [
-        "standing", "sitting", "posing", "looking at camera",
-        "standing with arms crossed", "leaning against a wall",
-        "sitting in a chair", "kneeling", "crouching", "lying down",
-        "standing with hands on hips", "looking to the side",
-        "gazing upward", "standing straight", "sitting cross-legged",
-        "reclining", "perched on a stool", "standing in a power pose",
-        "holding a pose", "standing with hands in pockets",
-        "looking over shoulder"
-      ]
-    },
-    "slow": {
-      "weight": 30,
-      "items": [
-        "walking", "gesturing", "talking", "turning around",
-        "reaching out", "bending forward", "stretching", "waving",
-        "clapping", "pointing", "stepping forward", "nodding",
-        "shrugging", "tilting head", "picking something up",
-        "handing something over", "adjusting hair", "putting on a jacket",
-        "slowly raising arms", "taking a step", "shifting weight",
-        "looking around", "pacing slowly"
-      ]
-    },
-    "fast": {
-      "weight": 20,
-      "items": [
-        "running", "jumping", "dancing", "spinning", "throwing a punch",
-        "swinging a bat", "kicking", "leaping", "twirling",
-        "doing a backflip", "sprinting", "lunging", "diving",
-        "swinging a sword", "throwing a ball", "catching a ball",
-        "doing a spin kick", "flipping hair", "whipping around",
-        "slam dunking", "skateboarding", "doing a cartwheel",
-        "breakdancing", "doing a karate chop", "slashing with a weapon",
-        "doing a high kick", "tumbling", "vaulting",
-        "dodging to the side"
-      ]
-    }
-  },
-
-  "action_animal": {
-    "static": {
-      "weight": 50,
-      "items": [
-        "sitting", "lying down", "standing", "perched", "resting",
-        "curled up", "looking at camera", "looking to the side",
-        "alert and watching", "gazing upward", "staring intently",
-        "posed on a surface", "crouching", "settled in place"
-      ]
-    },
-    "slow": {
-      "weight": 30,
-      "items": [
-        "walking", "sniffing", "grooming", "stretching", "yawning",
-        "turning around", "tilting head", "looking around",
-        "stepping forward", "pawing at something", "nuzzling",
-        "eating", "drinking", "exploring", "climbing",
-        "scratching", "preening"
-      ]
-    },
-    "fast": {
-      "weight": 20,
-      "items": [
-        "running", "jumping", "leaping", "pouncing", "flying",
-        "mid-flight", "diving", "sprinting", "chasing", "playing",
-        "splashing", "tumbling", "darting", "lunging", "flapping wings",
-        "mid-jump", "bounding"
-      ]
-    }
-  },
-
-  "action_object": {
-    "static": {
-      "weight": 70,
-      "items": [
-        "on a table", "on a wooden surface", "on a marble countertop",
-        "on a pedestal", "on a shelf", "on display",
-        "on a white background", "on a dark background",
-        "on a reflective surface", "centered in frame",
-        "arranged neatly", "placed on fabric", "on a windowsill",
-        "on a glass surface", "suspended in air", "hanging",
-        "mounted on a wall", "floating against a dark background"
-      ]
-    },
-    "dynamic": {
-      "weight": 30,
-      "items": [
-        "falling", "spinning", "shattering", "splashing",
-        "being poured", "toppling over", "caught mid-air",
-        "exploding apart", "disintegrating", "mid-bounce",
-        "wobbling", "tipping over", "rolling", "swinging"
-      ]
-    }
-  },
-
-  "prop": {
-    "probability": 0.15,
-    "items": [
-      "with sparklers", "with a splash of water", "throwing confetti",
-      "with floating ribbons", "with a smoke bomb", "holding a sparkler",
-      "with paint splattering", "with paper flying around",
-      "with feathers falling", "with glitter in the air",
-      "with bubbles floating around", "with flower petals falling",
-      "with snow falling", "with sparks flying", "with shattered glass",
-      "with water droplets splashing", "with confetti raining down",
-      "with streamers", "with a burst of powder", "with flying leaves",
-      "with dandelion seeds floating", "with splashing paint",
-      "with a spray of water", "with fireflies", "with floating embers"
-    ]
-  },
-
-  "atmosphere": {
-    "probability": 0.15,
-    "items": [
-      "in light fog", "with smoke around them", "in haze",
-      "with dust particles in the air", "in light rain", "with mist",
-      "in morning fog", "with steam rising", "in a dusty room",
-      "with volumetric haze", "in thick fog", "with smoke wisps",
-      "in drizzling rain", "with atmospheric haze",
-      "in a misty environment", "with light snow falling",
-      "in a steamy room", "with fog rolling in", "with smoke drifting",
-      "in a sandstorm", "with pollen in the air", "with light dust",
-      "in humidity haze", "with breath visible in cold air"
-    ]
-  },
-
-  "lighting": {
-    "standard": {
-      "weight": 40,
-      "items": [
-        "studio lighting", "soft lighting", "even lighting",
-        "diffused lighting", "natural lighting", "soft studio lighting",
-        "balanced lighting", "flat lighting", "overcast lighting",
-        "neutral lighting", "softbox lighting", "fill lighting",
-        "ambient lighting", "gentle lighting"
-      ]
-    },
-    "edge_case": {
-      "weight": 30,
-      "items": [
-        "strong backlight", "rim lighting", "dramatic side lighting",
-        "backlit", "silhouette lighting", "hair light from behind",
-        "strong rim light", "contre-jour lighting", "edge lighting",
-        "kicker light", "halo backlight", "bright window behind subject",
-        "golden hour backlight", "sunset backlight",
-        "strong key light from the side", "cross lighting"
-      ]
-    },
-    "harsh": {
-      "weight": 20,
-      "items": [
-        "bright overhead light", "hard directional light",
-        "single point light", "direct flash", "bare bulb lighting",
-        "spotlight", "hard shadow lighting", "high contrast lighting",
-        "top-down lighting", "single source harsh light",
-        "direct sunlight", "overhead fluorescent lighting"
-      ]
-    },
-    "colored": {
+    "backlight_rimlight": {
       "weight": 10,
-      "items": [
-        "warm golden light", "cool blue light", "neon lighting",
-        "red gel lighting", "green gel lighting", "purple neon glow",
-        "orange tungsten light", "mixed color temperature lighting",
-        "blue and red split lighting", "pink neon light", "cyan light",
-        "warm candlelight", "cold fluorescent light",
-        "multicolored lighting", "amber lighting",
-        "teal and orange lighting"
+      "description": "Backlighting creates translucent halos around hair and fabric edges",
+      "prompts": [
+        "a woman with backlit hair",
+        "a person with strong rim lighting",
+        "a man silhouetted with edge lighting",
+        "a woman with golden hour backlight",
+        "a person with hair glowing from behind",
+        "a woman backlit by a bright window",
+        "a man with sunset backlighting",
+        "a dancer with contre-jour lighting",
+        "a person with a halo of backlit hair",
+        "a cat backlit by a window",
+        "a woman with rim-lit flyaway hair",
+        "a fluffy dog with backlit fur",
+        "a person with strong side lighting",
+        "a glass bottle backlit",
+        "a sheer curtain backlit by a window",
+        "a bride with backlit veil",
+        "a person with kicker light from behind",
+        "a woman with cross lighting"
+      ]
+    },
+
+    "green_adjacent_colors": {
+      "weight": 5,
+      "description": "Subject wearing colors near green — yellow-green, olive, lime",
+      "prompts": [
+        "a person wearing a yellow-green shirt",
+        "a woman in an olive dress",
+        "a man in a lime green jacket",
+        "a person wearing a chartreuse top",
+        "a woman in a yellow-green sweater",
+        "a person in olive green pants and shirt",
+        "a man wearing a neon green vest",
+        "a woman in a sage green blouse",
+        "a person in a teal shirt",
+        "a child in a bright green hoodie",
+        "a woman in a moss green coat",
+        "a person wearing khaki",
+        "a man in an army green jacket",
+        "a woman in a mint green dress"
+      ]
+    },
+
+    "complex_silhouettes": {
+      "weight": 8,
+      "description": "Splashing water, scattered confetti, flying debris, bubbles",
+      "prompts": [
+        "a person with water splashing around them",
+        "a woman throwing confetti",
+        "a person surrounded by bubbles",
+        "a man with paint splattering around him",
+        "a person with paper flying around them",
+        "a woman with flower petals falling around her",
+        "a person with feathers falling around them",
+        "a dancer with glitter in the air",
+        "a person with sparklers",
+        "a woman with ribbons floating around her",
+        "a glass shattering",
+        "a splash of water",
+        "a burst of colorful powder",
+        "a person with confetti raining down",
+        "an explosion of flower petals",
+        "a person with leaves flying around them",
+        "a woman with dandelion seeds floating around her",
+        "soap bubbles floating"
+      ]
+    },
+
+    "baseline_easy": {
+      "weight": 15,
+      "description": "Clean simple subjects — baseline for comparison",
+      "prompts": [
+        "a woman", "a man", "a young woman", "a young man",
+        "a child", "a teenager", "a businessman", "a chef",
+        "a doctor", "a soldier", "a firefighter", "a nurse",
+        "a cat", "a dog", "a puppy", "a kitten",
+        "a golden retriever", "a husky", "a bird", "a rabbit",
+        "a potted plant", "a bouquet of flowers", "a chair",
+        "a car", "a motorcycle", "a bicycle", "a laptop",
+        "a guitar", "a violin", "a trumpet", "a stack of books",
+        "a coffee pot", "a teapot", "a lamp", "a ceramic vase",
+        "a vintage camera", "a candelabra", "a small tree"
       ]
     }
   }
