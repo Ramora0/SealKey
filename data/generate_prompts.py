@@ -76,7 +76,9 @@ def generate_prompt(rng: random.Random, data: dict) -> str:
         accessory_raw = pick_optional_tiered(rng, data["accessory"]["probability"], data["accessory"])
         accessory = f" {accessory_raw}" if accessory_raw else ""
 
-    action = pick_from_tiered(rng, extract_tiers(data["action"]))
+    # Pick action set matched to subject category
+    action_key = {"people": "action", "animals": "action_animal", "objects": "action_object"}[chosen_cat]
+    action = pick_from_tiered(rng, extract_tiers(data[action_key]))
 
     prop_raw = pick_optional(rng, data["prop"]["probability"], data["prop"]["items"])
     prop = f" {prop_raw}" if prop_raw else ""

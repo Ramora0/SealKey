@@ -63,7 +63,7 @@
         "a cat", "a dog", "a kitten", "a puppy", "a golden retriever",
         "a persian cat", "a long-haired cat", "a fluffy dog", "a poodle",
         "a german shepherd", "a husky", "a collie", "a bird", "a parrot",
-        "a cockatoo", "a owl", "a hawk", "a horse", "a rabbit",
+        "a cockatoo", "an owl", "a hawk", "a horse", "a rabbit",
         "a hamster", "a ferret", "a lizard", "a chameleon", "a snake",
         "a tarantula", "a butterfly", "a moth", "a chicken", "a rooster",
         "a peacock", "a fox"
@@ -270,6 +270,61 @@
         "breakdancing", "doing a karate chop", "slashing with a weapon",
         "doing a high kick", "tumbling", "vaulting",
         "dodging to the side"
+      ]
+    }
+  },
+
+  "action_animal": {
+    "static": {
+      "weight": 50,
+      "items": [
+        "sitting", "lying down", "standing", "perched", "resting",
+        "curled up", "looking at camera", "looking to the side",
+        "alert and watching", "gazing upward", "staring intently",
+        "posed on a surface", "crouching", "settled in place"
+      ]
+    },
+    "slow": {
+      "weight": 30,
+      "items": [
+        "walking", "sniffing", "grooming", "stretching", "yawning",
+        "turning around", "tilting head", "looking around",
+        "stepping forward", "pawing at something", "nuzzling",
+        "eating", "drinking", "exploring", "climbing",
+        "scratching", "preening"
+      ]
+    },
+    "fast": {
+      "weight": 20,
+      "items": [
+        "running", "jumping", "leaping", "pouncing", "flying",
+        "mid-flight", "diving", "sprinting", "chasing", "playing",
+        "splashing", "tumbling", "darting", "lunging", "flapping wings",
+        "mid-jump", "bounding"
+      ]
+    }
+  },
+
+  "action_object": {
+    "static": {
+      "weight": 70,
+      "items": [
+        "on a table", "on a wooden surface", "on a marble countertop",
+        "on a pedestal", "on a shelf", "on display",
+        "on a white background", "on a dark background",
+        "on a reflective surface", "centered in frame",
+        "arranged neatly", "placed on fabric", "on a windowsill",
+        "on a glass surface", "suspended in air", "hanging",
+        "mounted on a wall", "floating against a dark background"
+      ]
+    },
+    "dynamic": {
+      "weight": 30,
+      "items": [
+        "falling", "spinning", "shattering", "splashing",
+        "being poured", "toppling over", "caught mid-air",
+        "exploding apart", "disintegrating", "mid-bounce",
+        "wobbling", "tipping over", "rolling", "swinging"
       ]
     }
   },
