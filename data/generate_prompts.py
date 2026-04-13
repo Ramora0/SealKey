@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate unique image prompts from template.json."""
+"""Generate unique image prompts from template.json.
+
+Each prompt has a skeleton (quality + subject + action + lighting) and at most
+one focus element (hair, clothing, accessory, prop, atmosphere, or medium).
+This keeps prompts simple enough for the model to actually render faithfully.
+"""
 
 import argparse
 import json
@@ -9,6 +14,18 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent
 TEMPLATE_PATH = DATA_DIR / "template.json"
 
+# Focus slot weights control how often each optional element is chosen as
+# the single interesting thing in a prompt. None means no focus (bare skeleton).
+FOCUS_WEIGHTS: dict[str | None, int] = {
+    None: 20,         # bare skeleton — just subject + action + lighting
+    "hair": 25,       # people only
+    "clothing": 20,   # people only
+    "accessory": 10,  # people only
+    "medium": 5,
+    "prop": 10,
+    "atmosphere": 10,
+}
+
 
 def load_template() -> dict:
     with open(TEMPLATE_PATH) as f:
@@ -17,30 +34,14 @@ def load_template() -> dict:
 
 def pick_from_tiered(rng: random.Random, tiers: dict[str, dict]) -> str:
     """Pick an item from a dict of {tier_name: {weight, items}} entries."""
-    names, weights, item_lists = [], [], []
-    for name, tier in tiers.items():
+    weights, item_lists = [], []
+    for tier in tiers.values():
         if "weight" not in tier or "items" not in tier:
             continue
-        names.append(name)
         weights.append(tier["weight"])
         item_lists.append(tier["items"])
     chosen_tier = rng.choices(item_lists, weights=weights, k=1)[0]
     return rng.choice(chosen_tier)
-
-
-def pick_optional(rng: random.Random, prob: float, items: list[str]) -> str:
-    """Return a random item with given probability, else empty string."""
-    if rng.random() < prob:
-        return rng.choice(items)
-    return ""
-
-
-def pick_optional_tiered(rng: random.Random, prob: float, section: dict) -> str:
-    """Return a tiered pick with given probability, else empty string."""
-    if rng.random() < prob:
-        tiers = {k: v for k, v in section.items() if isinstance(v, dict) and "items" in v}
-        return pick_from_tiered(rng, tiers)
-    return ""
 
 
 def extract_tiers(section: dict) -> dict[str, dict]:
@@ -49,12 +50,9 @@ def extract_tiers(section: dict) -> dict[str, dict]:
 
 
 def generate_prompt(rng: random.Random, data: dict) -> str:
+    # --- skeleton (always present) ---
     quality = pick_from_tiered(rng, extract_tiers(data["quality"]))
 
-    medium_raw = pick_optional(rng, data["medium"]["probability"], data["medium"]["items"])
-    medium = f" {medium_raw}" if medium_raw else ""
-
-    # Subject — determine category for people-only slots
     subj_tiers = extract_tiers(data["subject"])
     subj_names = list(subj_tiers.keys())
     subj_weights = [subj_tiers[n]["weight"] for n in subj_names]
@@ -62,31 +60,37 @@ def generate_prompt(rng: random.Random, data: dict) -> str:
     subject = rng.choice(subj_tiers[chosen_cat]["items"])
     is_person = chosen_cat == "people"
 
-    # People-only optional slots
-    hair = ""
-    clothing = ""
-    accessory = ""
-    if is_person:
-        hair_raw = pick_optional_tiered(rng, data["hair"]["probability"], data["hair"])
-        hair = f" {hair_raw}" if hair_raw else ""
-
-        clothing_raw = pick_optional_tiered(rng, data["clothing"]["probability"], data["clothing"])
-        clothing = f" {clothing_raw}" if clothing_raw else ""
-
-        accessory_raw = pick_optional_tiered(rng, data["accessory"]["probability"], data["accessory"])
-        accessory = f" {accessory_raw}" if accessory_raw else ""
-
-    # Pick action set matched to subject category
     action_key = {"people": "action", "animals": "action_animal", "objects": "action_object"}[chosen_cat]
     action = pick_from_tiered(rng, extract_tiers(data[action_key]))
 
-    prop_raw = pick_optional(rng, data["prop"]["probability"], data["prop"]["items"])
-    prop = f" {prop_raw}" if prop_raw else ""
-
-    atmo_raw = pick_optional(rng, data["atmosphere"]["probability"], data["atmosphere"]["items"])
-    atmosphere = f" {atmo_raw}" if atmo_raw else ""
-
     lighting = pick_from_tiered(rng, extract_tiers(data["lighting"]))
+
+    # --- pick one focus element ---
+    # For non-people, people-only slots are excluded from the lottery
+    people_only = {"hair", "clothing", "accessory"}
+    candidates = {k: v for k, v in FOCUS_WEIGHTS.items()
+                  if k is None or (is_person or k not in people_only)}
+    focus = rng.choices(list(candidates.keys()), weights=list(candidates.values()), k=1)[0]
+
+    medium = ""
+    hair = ""
+    clothing = ""
+    accessory = ""
+    prop = ""
+    atmosphere = ""
+
+    if focus == "medium":
+        medium = f" {rng.choice(data['medium']['items'])}"
+    elif focus == "hair":
+        hair = f" {pick_from_tiered(rng, extract_tiers(data['hair']))}"
+    elif focus == "clothing":
+        clothing = f" {pick_from_tiered(rng, extract_tiers(data['clothing']))}"
+    elif focus == "accessory":
+        accessory = f" {pick_from_tiered(rng, extract_tiers(data['accessory']))}"
+    elif focus == "prop":
+        prop = f" {rng.choice(data['prop']['items'])}"
+    elif focus == "atmosphere":
+        atmosphere = f" {rng.choice(data['atmosphere']['items'])}"
 
     return f"{quality}{medium} of {subject}{hair}{clothing}{accessory}, {action}{prop}{atmosphere}, {lighting}"
 
@@ -104,7 +108,7 @@ def main():
 
     prompts: set[str] = set()
     attempts = 0
-    max_attempts = args.n * 20  # safety valve
+    max_attempts = args.n * 20
 
     while len(prompts) < args.n and attempts < max_attempts:
         prompts.add(generate_prompt(rng, data))
@@ -113,7 +117,6 @@ def main():
     if len(prompts) < args.n:
         print(f"Warning: only generated {len(prompts)} unique prompts after {attempts} attempts")
 
-    # Generate in order, preserving random distribution
     prompt_list = list(prompts)
     rng.shuffle(prompt_list)
     with open(args.output, "w") as f:
