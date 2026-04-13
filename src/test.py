@@ -9,11 +9,14 @@ import argparse
 import random
 from pathlib import Path
 
+import cv2
 import gradio as gr
+import numpy as np
 import torch
 from PIL import Image
 
 from src.generate import build_pipeline, load_prompts
+from src.green_screen import generate_green_screen
 
 pipeline = None
 prompts: list[str] = []
@@ -47,14 +50,17 @@ def generate_images(
         return_dict=False,
     )[0]
 
-    # Create green-background versions to visualize transparency
+    # Create green-screen-background versions to visualize transparency
     green_images = []
     # Alpha mask: white = opaque, black = transparent
     alpha_images = []
     for img in images:
         alpha = img.split()[3]
 
-        green_bg = Image.new("RGBA", img.size, (0, 255, 0, 255))
+        # Generate a procedural green screen background
+        gs_bgr = generate_green_screen(height=img.height, width=img.width)
+        gs_rgb = cv2.cvtColor(gs_bgr, cv2.COLOR_BGR2RGB)
+        green_bg = Image.fromarray(gs_rgb).convert("RGBA")
         green_bg.paste(img, mask=alpha)
         green_images.append(green_bg.convert("RGB"))
 

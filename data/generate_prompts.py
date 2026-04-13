@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Generate unique image prompts from template.json.
 
-Produces short, focused prompts matching LayerDiffusion's training style:
-"{subject/scenario}, {quality}" — typically 5-15 tokens.
-
-Each prompt targets one edge-case challenge (or is a clean baseline).
+Produces short, focused prompts matching LayerDiffusion's training style.
+Each prompt targets one edge-case challenge or is a common/stock-style subject.
 """
 
 import argparse
@@ -27,10 +25,7 @@ def generate_prompt(rng: random.Random, data: dict) -> str:
     weights = [challenges[n]["weight"] for n in names]
 
     chosen = rng.choices(names, weights=weights, k=1)[0]
-    subject = rng.choice(challenges[chosen]["prompts"])
-    quality = rng.choice(data["quality"])
-
-    return f"{subject}, {quality}"
+    return rng.choice(challenges[chosen]["prompts"])
 
 
 def main():
