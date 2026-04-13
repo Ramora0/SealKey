@@ -1,0 +1,4 @@
+# One prompt per line. Lines starting with # are ignored.
+a cute corgi, high quality, transparent background
+a red rose with water drops, transparent background
+a medieval sword, game asset, transparent background
