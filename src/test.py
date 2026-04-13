@@ -26,7 +26,8 @@ def ensure_pipeline():
     return pipeline
 
 
-def sample_and_generate(
+def generate_images(
+    prompt: str,
     batch_size: int,
     steps: int,
     negative_prompt: str,
@@ -34,7 +35,6 @@ def sample_and_generate(
     height: int,
 ):
     pipe = ensure_pipeline()
-    prompt = random.choice(prompts)
 
     images = pipe(
         prompt=[prompt] * batch_size,
@@ -70,14 +70,24 @@ def run_ui(args):
         raise SystemExit(f"No prompts found in {args.prompts}")
     print(f"Loaded {len(prompts)} prompts from {args.prompts}")
 
-    def on_generate(batch_size, steps, negative_prompt, width, height):
-        images, green_images, alpha_images, prompt = sample_and_generate(
-            int(batch_size), int(steps), negative_prompt, int(width), int(height),
+    def on_random(batch_size, steps, negative_prompt, width, height):
+        prompt = random.choice(prompts)
+        images, green_images, alpha_images, _ = generate_images(
+            prompt, int(batch_size), int(steps), negative_prompt, int(width), int(height),
+        )
+        return prompt, images, green_images, alpha_images
+
+    def on_manual(manual_prompt, batch_size, steps, negative_prompt, width, height):
+        prompt = manual_prompt.strip()
+        if not prompt:
+            return "", [], [], []
+        images, green_images, alpha_images, _ = generate_images(
+            prompt, int(batch_size), int(steps), negative_prompt, int(width), int(height),
         )
         return prompt, images, green_images, alpha_images
 
     with gr.Blocks(title="SealKey — LayerDiffusion Test") as demo:
-        gr.Markdown("# SealKey — LayerDiffusion Test\nSample a random prompt and generate transparent images.")
+        gr.Markdown("# SealKey — LayerDiffusion Test\nSample a random prompt or enter your own.")
 
         with gr.Row():
             batch_size = gr.Slider(1, 8, value=args.batch_size, step=1, label="Batch size")
@@ -91,16 +101,28 @@ def run_ui(args):
             label="Negative prompt",
         )
 
-        generate_btn = gr.Button("Generate", variant="primary", size="lg")
-        prompt_display = gr.Textbox(label="Sampled prompt", interactive=False)
+        with gr.Row():
+            random_btn = gr.Button("Random prompt", variant="primary", size="lg")
+        with gr.Row():
+            manual_prompt = gr.Textbox(label="Manual prompt", placeholder="Enter a prompt...")
+            manual_btn = gr.Button("Generate", variant="secondary", size="lg")
+
+        prompt_display = gr.Textbox(label="Prompt used", interactive=False)
         gallery = gr.Gallery(label="Original (RGBA)", columns=4, height="auto")
         green_gallery = gr.Gallery(label="Green background", columns=4, height="auto")
         alpha_gallery = gr.Gallery(label="Alpha mask (white=opaque, black=transparent)", columns=4, height="auto")
 
-        generate_btn.click(
-            fn=on_generate,
+        outputs = [prompt_display, gallery, green_gallery, alpha_gallery]
+
+        random_btn.click(
+            fn=on_random,
             inputs=[batch_size, steps, negative_prompt, width, height],
-            outputs=[prompt_display, gallery, green_gallery, alpha_gallery],
+            outputs=outputs,
+        )
+        manual_btn.click(
+            fn=on_manual,
+            inputs=[manual_prompt, batch_size, steps, negative_prompt, width, height],
+            outputs=outputs,
         )
 
     demo.launch(server_name="0.0.0.0", server_port=args.port)
