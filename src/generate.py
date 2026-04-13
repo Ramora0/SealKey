@@ -114,7 +114,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("output"),
+        default=Path("/fs/scratch/PAS2836/lees_stuff/green_imgs"),
         help="Output directory for generated images",
     )
     parser.add_argument("--steps", type=int, default=25, help="Inference steps")
