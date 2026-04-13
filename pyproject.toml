@@ -12,6 +12,7 @@ dependencies = [
     "einops",
     "opencv-python",
     "tqdm",
+    "gradio>=4.0",
 ]
 
 [project.scripts]
