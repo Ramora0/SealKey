@@ -103,7 +103,7 @@ def run_ui(args):
             height = gr.Slider(512, 1536, value=1024, step=64, label="Height")
 
         negative_prompt = gr.Textbox(
-            value="blurry, low quality, bad anatomy",
+            value="bad, ugly",
             label="Negative prompt",
         )
 

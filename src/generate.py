@@ -66,7 +66,7 @@ def generate_batch(
     prompts: list[str],
     output_dir: Path,
     *,
-    negative_prompt: str = "blurry, low quality, bad anatomy",
+    negative_prompt: str = "bad, ugly",
     steps: int = 25,
     batch_size: int = 4,
     seed: int | None = None,
@@ -130,7 +130,7 @@ def main():
     parser.add_argument(
         "--negative-prompt",
         type=str,
-        default="blurry, low quality, bad anatomy",
+        default="bad, ugly",
     )
     args = parser.parse_args()
 
