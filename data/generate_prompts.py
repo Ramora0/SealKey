@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Generate unique image prompts from template.json.
 
-Produces short, focused prompts matching LayerDiffusion's training style.
-Each prompt targets one edge-case challenge or is a common/stock-style subject.
+Uses a multiplicative structure:
+  - Common: subject × pose/placement
+  - Challenge modifiers: subject × modifier (e.g. "a woman with wild frizzy hair")
+  - Challenge subjects: special subject × pose (e.g. "a glass of wine on a table")
 """
 
 import argparse
@@ -20,12 +22,46 @@ def load_template() -> dict:
 
 
 def generate_prompt(rng: random.Random, data: dict) -> str:
-    challenges = data["challenges"]
-    names = list(challenges.keys())
-    weights = [challenges[n]["weight"] for n in names]
+    weights = data["weights"]
+    category = rng.choices(
+        ["common", "challenge_modifiers", "challenge_subjects"],
+        weights=[weights["common"], weights["challenge_modifiers"], weights["challenge_subjects"]],
+        k=1,
+    )[0]
 
-    chosen = rng.choices(names, weights=weights, k=1)[0]
-    return rng.choice(challenges[chosen]["prompts"])
+    if category == "common":
+        # Pick subject type, then subject × pose
+        type_weights = data["common_type_weights"]
+        type_names = list(type_weights.keys())
+        chosen_type = rng.choices(type_names, weights=[type_weights[t] for t in type_names], k=1)[0]
+        subject = rng.choice(data["subjects"][chosen_type])
+        pose = rng.choice(data["poses"][chosen_type])
+        return f"{subject}, {pose}"
+
+    elif category == "challenge_modifiers":
+        # Pick challenge, then pick a compatible subject × modifier
+        challenges = data["challenge_modifiers"]
+        names = list(challenges.keys())
+        ch_weights = [challenges[n]["weight"] for n in names]
+        chosen = rng.choices(names, weights=ch_weights, k=1)[0]
+        challenge = challenges[chosen]
+
+        subject_type = rng.choice(challenge["applies_to"])
+        subject = rng.choice(data["subjects"][subject_type])
+        modifier = rng.choice(challenge["items"])
+        return f"{subject} {modifier}"
+
+    else:
+        # Challenge subject × pose
+        challenges = data["challenge_subjects"]
+        names = list(challenges.keys())
+        ch_weights = [challenges[n]["weight"] for n in names]
+        chosen = rng.choices(names, weights=ch_weights, k=1)[0]
+        challenge = challenges[chosen]
+
+        subject = rng.choice(challenge["items"])
+        pose = rng.choice(challenge["poses"])
+        return f"{subject}, {pose}"
 
 
 def main():
