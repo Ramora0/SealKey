@@ -19,6 +19,9 @@ else
     echo "diffuser_layerdiffuse already exists, skipping clone"
 fi
 
+# Install PyTorch with CUDA support
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
 # Install project dependencies
 pip install -e .
 
