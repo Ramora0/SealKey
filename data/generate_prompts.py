@@ -111,12 +111,14 @@ def main():
     if len(prompts) < args.n:
         print(f"Warning: only generated {len(prompts)} unique prompts after {attempts} attempts")
 
-    sorted_prompts = sorted(prompts)
+    # Generate in order, preserving random distribution
+    prompt_list = list(prompts)
+    rng.shuffle(prompt_list)
     with open(args.output, "w") as f:
-        for p in sorted_prompts:
+        for p in prompt_list:
             f.write(p + "\n")
 
-    print(f"Wrote {len(sorted_prompts)} unique prompts to {args.output}")
+    print(f"Wrote {len(prompt_list)} unique prompts to {args.output}")
 
 
 if __name__ == "__main__":
