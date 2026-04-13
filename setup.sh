@@ -25,8 +25,8 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 # Install project dependencies
 pip install -e .
 
-# Install the layer_diffuse package from the cloned repo
-pip install -e diffuser_layerdiffuse/
+# Install requirements from the layerdiffuse repo
+pip install -r diffuser_layerdiffuse/requirements.txt
 
 echo ""
 echo "=== Setup complete ==="

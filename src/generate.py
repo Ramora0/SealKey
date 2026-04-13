@@ -1,8 +1,12 @@
 """Batch transparent image generation using LayerDiffusion (SDXL)."""
 
 import argparse
+import sys
 import time
 from pathlib import Path
+
+# Add the diffuser_layerdiffuse repo to sys.path so layer_diffuse is importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "diffuser_layerdiffuse"))
 
 import torch
 from diffusers import StableDiffusionXLPipeline
