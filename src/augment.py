@@ -40,10 +40,10 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 _ALL_CODECS = [
-    {"name": "h264",  "encoder": "libx264",     "mode": "crf",    "range": (28, 42), "container": "mp4"},
-    {"name": "h265",  "encoder": "libx265",     "mode": "crf",    "range": (32, 46), "container": "mp4"},
-    {"name": "mpeg2", "encoder": "mpeg2video",  "mode": "qscale", "range": (10, 25), "container": "mpg"},
-    {"name": "vp9",   "encoder": "libvpx-vp9",  "mode": "crf",    "range": (40, 55), "container": "webm"},
+    {"name": "h264",  "encoder": "libx264",     "mode": "crf",    "range": (14, 20), "container": "mp4"},
+    {"name": "h265",  "encoder": "libx265",     "mode": "crf",    "range": (18, 24), "container": "mp4"},
+    {"name": "mpeg2", "encoder": "mpeg2video",  "mode": "qscale", "range": (2, 6),   "container": "mpg"},
+    {"name": "vp9",   "encoder": "libvpx-vp9",  "mode": "crf",    "range": (24, 32), "container": "webm"},
 ]
 
 
@@ -215,8 +215,8 @@ def _stage_per_frame_multi(
     do_noise = bool(rng.random() < 0.6)
     noise_sigma = float(rng.uniform(3.0, 15.0))
 
-    do_banding = bool(rng.random() < 0.25)
-    banding_bits = int(rng.integers(3, 6))
+    do_banding = bool(rng.random() < 0.15)
+    banding_bits = int(rng.integers(6, 8))
 
     assert len(rgb_paths_list) == len(rgb_is_degraded) == len(rgb_outs)
     assert len(alpha_paths_list) == len(alpha_outs)
