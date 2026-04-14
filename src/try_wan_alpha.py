@@ -72,24 +72,11 @@ def download_weights():
     return paths
 
 
-def build_gauss_mask(frame_num: int, height: int, width: int) -> Path:
-    cache = REPO_DIR / "gauss_mask_cache"
-    if cache.exists() and any(cache.iterdir()):
-        return cache
-    cache.mkdir(parents=True, exist_ok=True)
-    script = REPO_DIR / "gen_gaussian_mask.py"
-    run(
-        [
-            sys.executable,
-            str(script),
-            "--frame_num", str(frame_num),
-            "--height", str(height),
-            "--width", str(width),
-            "--output_dir", str(cache),
-        ],
-        cwd=str(REPO_DIR),
-    )
-    return cache
+def gauss_mask_path() -> Path:
+    p = REPO_DIR / "gauss_mask"
+    if not p.exists():
+        raise FileNotFoundError(f"Expected pre-made mask at {p}; re-clone the repo.")
+    return p
 
 
 def write_prompt_file(prompt: str) -> Path:
@@ -137,8 +124,7 @@ def main():
         / "lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16.safetensors"
     )
 
-    w, h = [int(x) for x in args.size.split("*")]
-    mask_cache = build_gauss_mask(args.frame_num, h, w)
+    mask_cache = gauss_mask_path()
     prompt_file = write_prompt_file(args.prompt)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
