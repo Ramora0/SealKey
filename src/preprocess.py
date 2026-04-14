@@ -523,20 +523,57 @@ def _double_worker(job: tuple[Path, Path, Path, int, int, int]) -> tuple[str, bo
     return clip_out.name, skipped
 
 
-def _run_pool(worker, jobs, workers: int) -> None:
-    def _label(name: str, skipped: bool) -> str:
-        return f"{name} (skipped, already done)" if skipped else name
+try:
+    from tqdm import tqdm as _tqdm
+except ImportError:  # tqdm is optional — fall back to plain prints
+    _tqdm = None
 
-    if workers <= 1:
-        for i, job in enumerate(jobs):
-            name, skipped = worker(job)
-            print(f"[{i + 1}/{len(jobs)}] {_label(name, skipped)}")
-    else:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(worker, job) for job in jobs]
-            for i, fut in enumerate(as_completed(futures), start=1):
-                name, skipped = fut.result()
-                print(f"[{i}/{len(jobs)}] {_label(name, skipped)}")
+
+def _dispatch_worker(job):
+    """Tagged-tuple dispatcher. Expected job format: (kind, *payload) where
+    kind in {"solo", "double"} and payload matches _solo_worker / _double_worker.
+    """
+    kind = job[0]
+    payload = job[1:]
+    if kind == "solo":
+        return _solo_worker(payload)
+    if kind == "double":
+        return _double_worker(payload)
+    raise ValueError(f"Unknown job kind: {kind}")
+
+
+def _run_pool(worker, jobs, workers: int, desc: str = "preprocess") -> None:
+    total = len(jobs)
+    use_tqdm = _tqdm is not None
+
+    def _label(name: str, skipped: bool) -> str:
+        return f"{name} (skipped)" if skipped else name
+
+    if use_tqdm:
+        pbar = _tqdm(total=total, desc=desc, unit="clip", dynamic_ncols=True)
+    def _on_result(name: str, skipped: bool) -> None:
+        if use_tqdm:
+            pbar.update(1)
+            pbar.set_postfix_str(_label(name, skipped))
+        else:
+            _on_result.i += 1
+            print(f"[{_on_result.i}/{total}] {_label(name, skipped)}")
+    _on_result.i = 0  # type: ignore[attr-defined]
+
+    try:
+        if workers <= 1:
+            for job in jobs:
+                name, skipped = worker(job)
+                _on_result(name, skipped)
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(worker, job) for job in jobs]
+                for fut in as_completed(futures):
+                    name, skipped = fut.result()
+                    _on_result(name, skipped)
+    finally:
+        if use_tqdm:
+            pbar.close()
 
 
 # ---------------------------------------------------------------------------
@@ -575,75 +612,122 @@ def _auto_parallelism(workers: int | None, threads: int | None) -> tuple[int, in
 # Entry point — subcommands: solos, doubles
 # ---------------------------------------------------------------------------
 
-def _main_solos(args) -> None:
-    base_seed = args.seed if args.seed is not None else random.randint(0, 2**31)
+def _build_solo_jobs(clips: list[Path], out_dir: Path, count: int,
+                     base_seed: int, fps: int, threads: int,
+                     seed_offset: int = 1) -> list[tuple]:
+    """Build `count` solo jobs. Clips are shuffled-and-cycled so every clip
+    appears at least once before any repeats. Per-sample seed guarantees
+    independent augmentation rolls across repeats.
+
+    Returns tagged tuples ready for `_dispatch_worker`: ("solo", *payload).
+    """
+    sampler = np.random.default_rng(base_seed)
+    order: list[int] = []
+    while len(order) < count:
+        order.extend(sampler.permutation(len(clips)).tolist())
+    order = order[:count]
+    return [
+        ("solo", clips[idx], out_dir / f"solo_{i:05d}",
+         base_seed + seed_offset + i, fps, threads)
+        for i, idx in enumerate(order)
+    ]
+
+
+def _build_double_jobs(clips: list[Path], out_dir: Path, count: int,
+                       base_seed: int, fps: int, threads: int,
+                       seed_offset: int = 1) -> list[tuple]:
+    """Build `count` double jobs: each draws 2 distinct clips at random.
+
+    Returns tagged tuples ready for `_dispatch_worker`: ("double", *payload).
+    """
+    sampler = np.random.default_rng(base_seed)
+    jobs: list[tuple] = []
+    for i in range(count):
+        idx_t, idx_d = sampler.choice(len(clips), size=2, replace=False)
+        jobs.append((
+            "double",
+            clips[int(idx_t)],
+            clips[int(idx_d)],
+            out_dir / f"double_{i:05d}",
+            base_seed + seed_offset + i,
+            fps,
+            threads,
+        ))
+    return jobs
+
+
+def _announce_parallelism(args) -> None:
     args.workers, args.threads = _auto_parallelism(args.workers, args.threads)
     print(f"Parallelism: {args.workers} workers × {args.threads} ffmpeg threads "
           f"(usable cores: {_usable_cores()}).")
+
+
+def _main_solos(args) -> None:
+    base_seed = args.seed if args.seed is not None else random.randint(0, 2**31)
+    _announce_parallelism(args)
     clips = _prepare_inputs(args.input)
     if not clips:
         raise SystemExit(f"No clips found under {args.input}")
     print(f"Discovered {len(clips)} source clips, generating {args.count} solos.")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    # Each sample gets a random source clip; every clip is guaranteed to appear
-    # at least once before any clip repeats (shuffled then cycled). Per-sample
-    # seed ensures repeats get independent augmentation rolls.
-    sampler = np.random.default_rng(base_seed)
-    order: list[int] = []
-    while len(order) < args.count:
-        perm = sampler.permutation(len(clips)).tolist()
-        order.extend(perm)
-    order = order[:args.count]
-
-    jobs = [
-        (clips[idx], args.output / f"solo_{i:05d}",
-         base_seed + i + 1, args.fps, args.threads)
-        for i, idx in enumerate(order)
-    ]
-    _run_pool(_solo_worker, jobs, args.workers)
+    jobs = _build_solo_jobs(clips, args.output, args.count,
+                            base_seed, args.fps, args.threads)
+    _run_pool(_dispatch_worker, jobs, args.workers, desc="solos")
     print(f"\nDone — {args.count} solos written under {args.output}/")
 
 
 def _main_doubles(args) -> None:
     base_seed = args.seed if args.seed is not None else random.randint(0, 2**31)
-    args.workers, args.threads = _auto_parallelism(args.workers, args.threads)
-    print(f"Parallelism: {args.workers} workers × {args.threads} ffmpeg threads "
-          f"(usable cores: {_usable_cores()}).")
+    _announce_parallelism(args)
     clips = _prepare_inputs(args.input)
     if len(clips) < 2:
         raise SystemExit(f"Need at least 2 source clips under {args.input}, found {len(clips)}")
-    print(f"Discovered {len(clips)} source clips.")
+    print(f"Discovered {len(clips)} source clips, generating {args.count} doubles.")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    sampler = np.random.default_rng(base_seed)
-    jobs = []
-    for i in range(args.count):
-        idx_t, idx_d = sampler.choice(len(clips), size=2, replace=False)
-        jobs.append((
-            clips[int(idx_t)],
-            clips[int(idx_d)],
-            args.output / f"double_{i:05d}",
-            base_seed + i + 1,
-            args.fps,
-            args.threads,
-        ))
-    _run_pool(_double_worker, jobs, args.workers)
+    jobs = _build_double_jobs(clips, args.output, args.count,
+                              base_seed, args.fps, args.threads)
+    _run_pool(_dispatch_worker, jobs, args.workers, desc="doubles")
     print(f"\nDone — {args.count} doubles written under {args.output}/")
 
 
 def _main_all(args) -> None:
-    """Run solos then doubles into <output>/solos and <output>/doubles.
+    """Run solos and doubles interleaved into <output>/{solos,doubles}.
 
-    Shares --input, --count, --fps, --seed, --workers, --threads across both.
-    Each sub-run is independently resumable (same idempotency check as a
-    standalone invocation), so re-running picks up wherever it left off.
+    Jobs from both kinds are shuffled together and dispatched through a
+    single process pool. Benefits: partial output across both kinds if
+    killed midway, one unified progress bar, and better disk-cache reuse
+    when overlapping source clips happen to land on the same worker.
     """
-    base_output = args.output
-    for sub_mode, runner in (("solos", _main_solos), ("doubles", _main_doubles)):
-        print(f"\n==================== {sub_mode} ====================")
-        args.output = base_output / sub_mode
-        runner(args)
+    base_seed = args.seed if args.seed is not None else random.randint(0, 2**31)
+    _announce_parallelism(args)
+    clips = _prepare_inputs(args.input)
+    if len(clips) < 2:
+        raise SystemExit(f"Need at least 2 source clips under {args.input}, found {len(clips)}")
+    print(f"Discovered {len(clips)} source clips, generating "
+          f"{args.count} solos + {args.count} doubles (interleaved).")
+
+    solos_out = args.output / "solos"
+    doubles_out = args.output / "doubles"
+    solos_out.mkdir(parents=True, exist_ok=True)
+    doubles_out.mkdir(parents=True, exist_ok=True)
+
+    # Disjoint seed spaces so solo_000 and double_000 can't collide.
+    solo_jobs = _build_solo_jobs(clips, solos_out, args.count,
+                                 base_seed, args.fps, args.threads,
+                                 seed_offset=1)
+    double_jobs = _build_double_jobs(clips, doubles_out, args.count,
+                                     base_seed, args.fps, args.threads,
+                                     seed_offset=args.count + 1)
+
+    jobs = solo_jobs + double_jobs
+    shuffler = random.Random(base_seed)
+    shuffler.shuffle(jobs)
+
+    _run_pool(_dispatch_worker, jobs, args.workers, desc="all")
+    print(f"\nDone — {args.count} solos + {args.count} doubles written under "
+          f"{args.output}/ (solos/, doubles/).")
 
 
 def main():
