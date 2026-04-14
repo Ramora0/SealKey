@@ -11,25 +11,29 @@ Hint-channel generation is done at runtime by the dataloader using
 `src.hint_generators` — no hint files are stored here.
 
 Output per solo sample:
-    <output>/solo_<i>/input.<ext>   — degraded RGB composite (model input)
-    <output>/solo_<i>/gt.mkv        — clean pre-composite foreground RGBA
-                                       (FFV1 yuva444p: lossless RGB + alpha)
-    <output>/solo_<i>/manifest.json — source clip + seed + GS profile
+    <output>/solo_<i>/input.<ext>      — degraded RGB composite (model input)
+    <output>/solo_<i>/gt_rgb.mp4       — clean foreground RGB (h264 yuv444p
+                                          CRF 12, visually lossless)
+    <output>/solo_<i>/gt_alpha.mkv     — clean foreground alpha (FFV1 gray,
+                                          lossless)
+    <output>/solo_<i>/manifest.json    — source clip + seed + GS profile
 
 Output per double clip:
-    <output>/double_<i>/input.<ext>     — multi-subject composite
-    <output>/double_<i>/gt_target.mkv   — clean target RGBA (FFV1 yuva444p)
-    <output>/double_<i>/gt_all.mkv      — target ∪ visible distractor, target
-                                           composited on top; RGBA (FFV1 yuva444p)
-    <output>/double_<i>/manifest.json   — source clips + placement
+    <output>/double_<i>/input.<ext>         — multi-subject composite
+    <output>/double_<i>/gt_target_rgb.mp4   — target RGB (h264 yuv444p CRF 12)
+    <output>/double_<i>/gt_target_alpha.mkv — target alpha (FFV1 gray, lossless)
+    <output>/double_<i>/gt_all_rgb.mp4      — target ∪ visible distractor RGB,
+                                               target composited on top
+    <output>/double_<i>/gt_all_alpha.mkv    — union alpha (FFV1 gray, lossless)
+    <output>/double_<i>/manifest.json       — source clips + placement
 
 Training uses either gt_target for target-specific hints, or gt_all for
 "everything in frame" hints. Distractor-only supervision is intentionally
 absent — it can be impossible when occluded by the target.
 
 Degraded `input` extension varies by rolled codec (see augment.CODECS). GT
-streams are always FFV1 yuva444p in .mkv — lossless, 4:4:4 chroma + alpha,
-built into every ffmpeg.
+RGB is h264 yuv444p CRF 12 (visually lossless); GT alpha is FFV1 gray
+(bit-exact). Alpha stays lossless because it's the primary prediction target.
 
 Layout expected for --input (both modes): one or more paths. Each may be
     - A clip directory containing RGBA PNG frames, OR
@@ -165,7 +169,8 @@ def _solo_done(clip_out: Path) -> bool:
     return (
         clip_out.is_dir()
         and any(clip_out.glob("input.*"))
-        and (clip_out / "gt.mkv").exists()
+        and (clip_out / "gt_rgb.mp4").exists()
+        and (clip_out / "gt_alpha.mkv").exists()
         and (clip_out / "manifest.json").exists()
     )
 
@@ -177,7 +182,7 @@ def preprocess_solo(
     fps: int = 24,
     threads: int = 0,
 ) -> None:
-    """Trajectory → composite → augment. Writes input.<ext> + gt_rgb.mkv +
+    """Trajectory → composite → augment. Writes input.<ext> + gt_rgb.mp4 +
     gt_alpha.mkv + manifest.json.
 
     Idempotent: if all outputs already exist, returns immediately.
@@ -341,8 +346,10 @@ def _double_done(clip_out: Path) -> bool:
     return (
         clip_out.is_dir()
         and any(clip_out.glob("input.*"))
-        and (clip_out / "gt_target.mkv").exists()
-        and (clip_out / "gt_all.mkv").exists()
+        and (clip_out / "gt_target_rgb.mp4").exists()
+        and (clip_out / "gt_target_alpha.mkv").exists()
+        and (clip_out / "gt_all_rgb.mp4").exists()
+        and (clip_out / "gt_all_alpha.mkv").exists()
         and (clip_out / "manifest.json").exists()
     )
 

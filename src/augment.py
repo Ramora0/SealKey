@@ -12,8 +12,10 @@ composite, codec artifacts, and color banding, while preserving real scene
 content (motion, DoF, sensor noise).
 
 Outputs (codec stage default):
-    <output_dir>/input.<ext>  — degraded RGB (rolled lossy codec)
-    <output_dir>/<label>.mkv  — clean GT RGBA (FFV1 yuva444p), one per pair
+    <output_dir>/input.<ext>         — degraded RGB (rolled lossy codec)
+    <output_dir>/<label>_rgb.mp4     — clean GT RGB (h264 yuv444p CRF 12,
+                                        visually lossless)
+    <output_dir>/<label>_alpha.mkv   — clean GT alpha (FFV1 gray, lossless)
     <output_dir>/augment_settings.json
 
 Usage:
@@ -40,10 +42,10 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 _ALL_CODECS = [
-    {"name": "h264",  "encoder": "libx264",     "mode": "crf",    "range": (14, 20), "container": "mp4"},
-    {"name": "h265",  "encoder": "libx265",     "mode": "crf",    "range": (18, 24), "container": "mp4"},
-    {"name": "mpeg2", "encoder": "mpeg2video",  "mode": "qscale", "range": (2, 6),   "container": "mpg"},
-    {"name": "vp9",   "encoder": "libvpx-vp9",  "mode": "crf",    "range": (24, 32), "container": "webm"},
+    {"name": "h264",  "encoder": "libx264",     "mode": "crf",    "range": (12, 17), "container": "mp4"},
+    {"name": "h265",  "encoder": "libx265",     "mode": "crf",    "range": (16, 21), "container": "mp4"},
+    {"name": "mpeg2", "encoder": "mpeg2video",  "mode": "qscale", "range": (2, 4),   "container": "mpg"},
+    {"name": "vp9",   "encoder": "libvpx-vp9",  "mode": "crf",    "range": (20, 26), "container": "webm"},
 ]
 
 
@@ -283,18 +285,23 @@ def _stage_per_frame_multi(
 # Stage 4: codec encode
 # ---------------------------------------------------------------------------
 
-# FFV1 in Matroska: truly lossless, 4:4:4 yuv, built into every ffmpeg core
-# build (no external lib dependency). Used for all GT (clean) streams. When
-# the input PNG sequence is 4-channel (RGBA), we encode with yuva444p so the
-# alpha plane is preserved losslessly in the same container.
+# FFV1 in Matroska: truly lossless, built into every ffmpeg core build. Used
+# for GT alpha (gray8) — alpha is the primary prediction target, so bit-exact.
 LOSSLESS = {"encoder": "ffv1", "container": "mkv"}
+
+# GT RGB is encoded visually-lossless (h264 yuv444p CRF 12) rather than truly
+# lossless. Where alpha==0, RGB doesn't contribute to the usual alpha-weighted
+# RGB loss; where alpha>0, CRF 12 at 4:4:4 is perceptually indistinguishable
+# from source. Cuts GT size ~10-20x vs FFV1 yuva444p.
+GT_RGB_CODEC = {"encoder": "libx264", "crf": 12, "pix_fmt": "yuv444p",
+                "container": "mp4"}
 
 
 def _ffmpeg_lossless_encode(in_dir: Path, out_path: Path, fps: int,
                             pix_fmt: str, threads: int = 0) -> None:
     """Encode a PNG sequence losslessly (FFV1 in .mkv) at the given pix_fmt.
 
-    Use yuv444p for 3-channel input, yuva444p for 4-channel RGBA input.
+    Use `gray` for 1-channel alpha input, `yuv444p` for 3-channel RGB input.
     """
     enc = [
         "ffmpeg", "-y",
@@ -316,19 +323,29 @@ def _ffmpeg_lossless_encode(in_dir: Path, out_path: Path, fps: int,
         )
 
 
-def _merge_rgba_pngs(rgb_dir: Path, alpha_dir: Path, out_dir: Path) -> None:
-    """Merge paired RGB (3-ch) + alpha (1-ch) PNG sequences into 4-channel
-    RGBA PNGs in `out_dir`. Filenames must match between the two inputs."""
-    rgb_paths = sorted(rgb_dir.glob("*.png"))
-    for p in rgb_paths:
-        rgb = cv2.imread(str(p), cv2.IMREAD_COLOR)
-        a = cv2.imread(str(alpha_dir / p.name), cv2.IMREAD_GRAYSCALE)
-        if rgb is None or a is None:
-            raise ValueError(f"Missing pair for {p.name} ({rgb_dir}, {alpha_dir})")
-        if a.shape[:2] != rgb.shape[:2]:
-            a = cv2.resize(a, (rgb.shape[1], rgb.shape[0]),
-                           interpolation=cv2.INTER_LINEAR)
-        cv2.imwrite(str(out_dir / p.name), np.dstack([rgb, a]))
+def _ffmpeg_gt_rgb_encode(in_dir: Path, out_path: Path, fps: int,
+                          threads: int = 0) -> None:
+    """Encode a 3-channel PNG sequence with libx264 yuv444p CRF 12 — visually
+    lossless at 4:4:4 chroma. Much smaller than FFV1 for GT RGB."""
+    enc = [
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-i", str(in_dir / "%06d.png"),
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", GT_RGB_CODEC["encoder"],
+        "-pix_fmt", GT_RGB_CODEC["pix_fmt"],
+        "-crf", str(GT_RGB_CODEC["crf"]),
+        "-preset", "medium",
+    ]
+    if threads > 0:
+        enc += ["-threads", str(threads)]
+    enc += [str(out_path)]
+    r = subprocess.run(enc, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg GT RGB encode failed exit={r.returncode}\n"
+            f"--- stderr ---\n{r.stderr.decode(errors='replace')}"
+        )
 
 
 def _ffmpeg_codec_encode(in_dir: Path, out_path: Path, fps: int,
@@ -382,11 +399,13 @@ def augment_multi(
     Every RGB stream shares the same physical augmentations (geometric,
     motion_blur, DoF, noise — same parameters and same noise sample). Quality-
     degrading stages (banding, lossy codec) are applied only to `input_rgb_dir`;
-    GT pairs are merged into RGBA and encoded with FFV1 yuva444p (lossless).
+    GT is emitted as split streams — RGB visually-lossless (h264 yuv444p
+    CRF 12), alpha bit-exact (FFV1 gray).
 
     Outputs:
-        <output_dir>/input.<ext>    — degraded RGB (rolled lossy codec)
-        <output_dir>/<label>.mkv    — clean GT RGBA (FFV1 yuva444p), one per pair
+        <output_dir>/input.<ext>          — degraded RGB (rolled lossy codec)
+        <output_dir>/<label>_rgb.mp4      — clean GT RGB (h264 yuv444p CRF 12)
+        <output_dir>/<label>_alpha.mkv    — clean GT alpha (FFV1 gray, lossless)
         <output_dir>/augment_settings.json
 
     Args:
@@ -500,38 +519,51 @@ def augment_multi(
             lo, hi = codec["range"]
             level = int(rng.integers(lo, hi + 1))
             ext = codec["container"]
-            pix_fmt = "yuv422p" if rng.random() < 0.5 else "yuv420p"
+            # 4:2:2 most of the time (broadcast standard); 4:4:4 occasionally
+            # for pristine-source look. yuv420p is excluded — its chroma
+            # subsampling causes visible block/edge artifacts on matting edges.
+            # mpeg2video only supports up to 4:2:2, so clamp accordingly.
+            pix_fmt = "yuv444p" if rng.random() < 0.25 else "yuv422p"
+            if codec["encoder"] == "mpeg2video":
+                pix_fmt = "yuv422p"
             settings["codec"] = {
                 "input": {"encoder": codec["encoder"], "mode": codec["mode"],
                           "level": level, "container": ext, "pix_fmt": pix_fmt},
-                "gt": {"encoder": LOSSLESS["encoder"],
-                       "container": LOSSLESS["container"],
-                       "pix_fmt": "yuva444p"},
+                "gt_rgb": {"encoder": GT_RGB_CODEC["encoder"], "mode": "crf",
+                           "level": GT_RGB_CODEC["crf"],
+                           "container": GT_RGB_CODEC["container"],
+                           "pix_fmt": GT_RGB_CODEC["pix_fmt"]},
+                "gt_alpha": {"encoder": LOSSLESS["encoder"],
+                             "container": LOSSLESS["container"],
+                             "pix_fmt": "gray"},
             }
-            # input (degraded) — rolled codec
+            # input (degraded) — rolled codec. GT: RGB visually-lossless
+            # (h264 yuv444p CRF 12), alpha bit-exact (FFV1 gray).
             _ffmpeg_codec_encode(cur_rgbs[0], output_dir / f"input.{ext}",
                                  fps, codec, level, pix_fmt, threads=threads)
-            # Merge each (gt_rgb, gt_alpha) pair into an RGBA PNG sequence,
-            # then encode losslessly as yuva444p.
             for rgb_d, alpha_d, label in zip(cur_rgbs[1:], cur_alphas, gt_labels):
-                rgba_d = tmp / f"04_rgba_{label}"; rgba_d.mkdir()
-                _merge_rgba_pngs(rgb_d, alpha_d, rgba_d)
-                _ffmpeg_lossless_encode(rgba_d, output_dir / f"{label}.mkv",
-                                        fps, pix_fmt="yuva444p", threads=threads)
+                _ffmpeg_gt_rgb_encode(rgb_d, output_dir / f"{label}_rgb.mp4",
+                                      fps, threads=threads)
+                _ffmpeg_lossless_encode(alpha_d, output_dir / f"{label}_alpha.mkv",
+                                        fps, pix_fmt="gray", threads=threads)
             (output_dir / "augment_settings.json").write_text(
                 json.dumps(settings, indent=2)
             )
             return
         settings["codec"] = {"on": False}
 
-        # Codec skipped: emit per-stream PNG subdirectories. The degraded input
-        # stays as 3-ch RGB; each GT pair is merged into 4-ch RGBA PNGs.
+        # Codec skipped: emit per-stream PNG subdirectories. RGB and alpha are
+        # kept in separate subdirs to mirror the split codec outputs.
         input_out = output_dir / "input"; input_out.mkdir(exist_ok=True)
         for name, orig in zip(seq_names, rgb_paths):
             shutil.copy(cur_rgbs[0] / name, input_out / orig.name)
         for rgb_d, alpha_d, label in zip(cur_rgbs[1:], cur_alphas, gt_labels):
-            out = output_dir / label; out.mkdir(exist_ok=True)
-            _merge_rgba_pngs(rgb_d, alpha_d, out)
+            rgb_out = output_dir / f"{label}_rgb"; rgb_out.mkdir(exist_ok=True)
+            alpha_out = output_dir / f"{label}_alpha"; alpha_out.mkdir(exist_ok=True)
+            for p in sorted(rgb_d.glob("*.png")):
+                shutil.copy(p, rgb_out / p.name)
+            for p in sorted(alpha_d.glob("*.png")):
+                shutil.copy(p, alpha_out / p.name)
         (output_dir / "augment_settings.json").write_text(
             json.dumps(settings, indent=2)
         )

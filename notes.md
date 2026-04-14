@@ -14,7 +14,7 @@ Over Corridorkey:
 4. Much more comprehensive data
 5. No licensing issues
 
-ls -lh preview_out/input.* preview_out/gt.mkv; ffprobe -v error -show_entries stream=codec_name,pix_fmt:format=size,duration,bit_rate -of default=noprint_wrappers=1 preview_out/gt.mkv preview_out/input.*;
+ls -lh preview_out/input.* preview_out/gt_rgb.mp4 preview_out/gt_alpha.mkv; ffprobe -v error -show_entries stream=codec_name,pix_fmt:format=size,duration,bit_rate -of default=noprint_wrappers=1 preview_out/gt_rgb.mp4 preview_out/gt_alpha.mkv preview_out/input.*;
 
 ## Data
 

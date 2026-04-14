@@ -2,23 +2,25 @@
 
 Supports both preprocess modes:
 
-    solo     — one subject on a generated green screen. GT stream: gt.mkv.
+    solo     — one subject on a generated green screen. GT streams:
+               gt_rgb.mp4 + gt_alpha.mkv.
     doubles  — target + distractor on one shared green screen. GT streams:
-               gt_target.mkv (target only) and gt_all.mkv (target ∪ visible
-               distractor).
+               gt_target_{rgb.mp4,alpha.mkv} (target only) and
+               gt_all_{rgb.mp4,alpha.mkv} (target ∪ visible distractor).
 
-All GT streams are RGBA (FFV1 yuva444p) — we decode and split into rgb/alpha
-panels per stream.
+GT is stored split: RGB as h264 yuv444p CRF 12 (visually lossless), alpha as
+FFV1 gray (bit-exact). We decode each pair and recombine for display.
 
 Layout per run (solo):
-    <out>/input.<ext>         — codec-encoded composite
-    <out>/gt.mkv              — clean GT RGBA (FFV1)
-    <out>/frames/%06d.png     — [input | gt_rgb | gt_alpha | hint]
-    <out>/preview.<ext>       — frames stitched to a playable video
+    <out>/input.<ext>              — codec-encoded composite
+    <out>/gt_rgb.mp4, gt_alpha.mkv — clean GT (split streams)
+    <out>/frames/%06d.png          — [input | gt_rgb | gt_alpha | hint]
+    <out>/preview.<ext>            — frames stitched to a playable video
 
 Layout per run (doubles):
     <out>/input.<ext>
-    <out>/gt_target.mkv, <out>/gt_all.mkv
+    <out>/gt_target_rgb.mp4, gt_target_alpha.mkv
+    <out>/gt_all_rgb.mp4, gt_all_alpha.mkv
     <out>/frames/%06d.png     — [input | target_rgb | target_alpha |
                                  all_rgb | all_alpha | hint]
 
@@ -196,31 +198,35 @@ def _stitch_preview(frames_dir: Path, out_dir: Path, fps: int) -> Path:
 # ---------------------------------------------------------------------------
 
 def _run_solo(clip_in: Path, out_dir: Path, seed: int, fps: int,
-              ) -> tuple[Path, list[tuple[str, Path]]]:
+              ) -> tuple[Path, list[tuple[str, Path, Path]]]:
     preprocess_solo(clip_in, out_dir, seed=seed, fps=fps)
     inputs = list(out_dir.glob("input.*"))
-    gt = out_dir / "gt.mkv"
-    if not inputs or not gt.exists():
+    rgb = out_dir / "gt_rgb.mp4"
+    alpha = out_dir / "gt_alpha.mkv"
+    if not inputs or not rgb.exists() or not alpha.exists():
         raise SystemExit(f"preprocess_solo missing outputs under {out_dir}")
-    return inputs[0], [("gt", gt)]
+    return inputs[0], [("gt", rgb, alpha)]
 
 
 def _run_doubles(clip_t: Path, clip_d: Path, out_dir: Path, seed: int, fps: int,
-                 ) -> tuple[Path, list[tuple[str, Path]]]:
+                 ) -> tuple[Path, list[tuple[str, Path, Path]]]:
     preprocess_double(clip_t, clip_d, out_dir, seed=seed, fps=fps)
     inputs = list(out_dir.glob("input.*"))
-    target = out_dir / "gt_target.mkv"
-    all_mkv = out_dir / "gt_all.mkv"
-    if not inputs or not target.exists() or not all_mkv.exists():
+    t_rgb = out_dir / "gt_target_rgb.mp4"
+    t_a = out_dir / "gt_target_alpha.mkv"
+    a_rgb = out_dir / "gt_all_rgb.mp4"
+    a_a = out_dir / "gt_all_alpha.mkv"
+    missing = [p for p in (t_rgb, t_a, a_rgb, a_a) if not p.exists()]
+    if not inputs or missing:
         raise SystemExit(f"preprocess_double missing outputs under {out_dir}")
-    return inputs[0], [("target", target), ("all", all_mkv)]
+    return inputs[0], [("target", t_rgb, t_a), ("all", a_rgb, a_a)]
 
 
 def _clean_output(out_dir: Path) -> None:
     """Clear previous preview artifacts so a stale run doesn't short-circuit
     the idempotency check in preprocess_{solo,double}."""
-    for pat in ("input.*", "gt*.mkv", "manifest.json", "augment_settings.json",
-                "preview.*"):
+    for pat in ("input.*", "gt*.mkv", "gt*.mp4", "manifest.json",
+                "augment_settings.json", "preview.*"):
         for p in out_dir.glob(pat):
             p.unlink()
     for sub in ("_decoded", "frames"):
@@ -281,26 +287,30 @@ def main() -> None:
         input_video, gt_streams = _run_doubles(
             clips[0], clips[1], args.output, seed, args.fps,
         )
+    gt_names = ", ".join(f"{rgb.name}+{alpha.name}" for _, rgb, alpha in gt_streams)
     print(f"[preprocess] mode={args.mode}  seed={seed}  "
-          f"input={input_video.name}  gt=[{', '.join(p.name for _, p in gt_streams)}]")
+          f"input={input_video.name}  gt=[{gt_names}]")
 
     settings_path = args.output / "augment_settings.json"
     if settings_path.exists():
         print(f"[augment settings] (from {settings_path.name})")
         print(json.dumps(json.loads(settings_path.read_text()), indent=2))
 
-    # 2. Decode input + each GT stream back to PNG frames. GT mkvs are RGBA
-    # via FFV1 yuva444p, so ffmpeg emits 4-channel PNGs natively.
+    # 2. Decode input + each GT (rgb, alpha) pair back to PNG frames.
     decoded_root = args.output / "_decoded"
     if decoded_root.exists():
         shutil.rmtree(decoded_root)
     input_frames = _decode_video(input_video, decoded_root / "input")
-    gt_frames_by_label: dict[str, list[Path]] = {
-        label: _decode_video(mkv, decoded_root / label) for label, mkv in gt_streams
+    gt_frames_by_label: dict[str, tuple[list[Path], list[Path]]] = {
+        label: (
+            _decode_video(rgb, decoded_root / f"{label}_rgb"),
+            _decode_video(alpha, decoded_root / f"{label}_alpha"),
+        )
+        for label, rgb, alpha in gt_streams
     }
 
     n = min(len(input_frames),
-            *(len(fs) for fs in gt_frames_by_label.values()))
+            *(min(len(r), len(a)) for r, a in gt_frames_by_label.values()))
     if n == 0:
         raise SystemExit("No frames decoded from preprocess output.")
     print(f"[decode] {n} frames")
@@ -330,17 +340,17 @@ def main() -> None:
 
         panels: list[np.ndarray] = [_label_frame(rgb, "input (degraded)")]
         gt_rgba_by_label: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        for label, frames in gt_frames_by_label.items():
-            rgba = cv2.imread(str(frames[i]), cv2.IMREAD_UNCHANGED)
-            if rgba is None or rgba.ndim != 3 or rgba.shape[2] != 4:
+        for label, (rgb_frames, alpha_frames) in gt_frames_by_label.items():
+            gt_rgb = cv2.imread(str(rgb_frames[i]), cv2.IMREAD_COLOR)
+            gt_a = cv2.imread(str(alpha_frames[i]), cv2.IMREAD_GRAYSCALE)
+            if gt_rgb is None or gt_a is None:
                 raise SystemExit(
-                    f"Expected 4-channel RGBA from {label}, got shape "
-                    f"{None if rgba is None else rgba.shape}"
+                    f"Failed to decode frame {i} for {label} "
+                    f"(rgb={rgb_frames[i]}, alpha={alpha_frames[i]})"
                 )
-            gt_rgb = rgba[..., :3]
-            gt_a = rgba[..., 3]
             if gt_rgb.shape[:2] != (th, tw):
                 gt_rgb = cv2.resize(gt_rgb, (tw, th), interpolation=cv2.INTER_LINEAR)
+            if gt_a.shape[:2] != (th, tw):
                 gt_a = cv2.resize(gt_a, (tw, th), interpolation=cv2.INTER_LINEAR)
             gt_rgba_by_label[label] = (gt_rgb, gt_a)
             panels.append(_label_frame(gt_rgb, f"{label}_rgb"))
