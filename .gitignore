@@ -1,1 +1,6 @@
 __pycache__/
+.h100/
+output/
+venv/
+wan_alpha_workspace/
+*.egg-info/
