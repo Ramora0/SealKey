@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Generate unique image prompts from template.json.
+"""Generate unique video prompts from template.json.
 
-Uses a multiplicative structure:
-  - Common: subject × pose/placement
-  - Challenge modifiers: subject × modifier (e.g. "a woman with wild frizzy hair")
-  - Challenge subjects: special subject × pose (e.g. "a glass of wine on a table")
+Output format: plain text, one prompt per line. Frame length is randomized
+downstream at video generation time.
+
+Each prompt targets a matting challenge (fine hair in motion, sheer fabric,
+fluids, transparent objects, smoke/mist, fuzzy motion, color contamination,
+light hair) or is a common baseline subject.
 """
 
 import argparse
@@ -21,52 +23,39 @@ def load_template() -> dict:
         return json.load(f)
 
 
+def build_scene(rng: random.Random, challenge: dict) -> str:
+    if challenge["type"] == "scene_list":
+        return rng.choice(challenge["scenes"])
+
+    fmt = challenge["format"]
+    fields = {}
+    if "{subject}" in fmt:
+        fields["subject"] = rng.choice(challenge["subjects"])
+    if "{modifier}" in fmt:
+        fields["modifier"] = rng.choice(challenge["modifiers"])
+    if "{motion}" in fmt:
+        fields["motion"] = rng.choice(challenge["motions"])
+    return fmt.format(**fields)
+
+
 def generate_prompt(rng: random.Random, data: dict) -> str:
-    weights = data["weights"]
-    category = rng.choices(
-        ["common", "challenge_modifiers", "challenge_subjects"],
-        weights=[weights["common"], weights["challenge_modifiers"], weights["challenge_subjects"]],
-        k=1,
-    )[0]
+    challenges = data["challenges"]
+    names = list(challenges.keys())
+    weights = [challenges[n]["weight"] for n in names]
 
-    if category == "common":
-        # Pick subject type, then subject × pose
-        type_weights = data["common_type_weights"]
-        type_names = list(type_weights.keys())
-        chosen_type = rng.choices(type_names, weights=[type_weights[t] for t in type_names], k=1)[0]
-        subject = rng.choice(data["subjects"][chosen_type])
-        pose = rng.choice(data["poses"][chosen_type])
-        return f"{subject}, {pose}"
+    chosen = rng.choices(names, weights=weights, k=1)[0]
+    challenge = challenges[chosen]
 
-    elif category == "challenge_modifiers":
-        # Pick challenge, then pick a compatible subject × modifier
-        challenges = data["challenge_modifiers"]
-        names = list(challenges.keys())
-        ch_weights = [challenges[n]["weight"] for n in names]
-        chosen = rng.choices(names, weights=ch_weights, k=1)[0]
-        challenge = challenges[chosen]
+    shot_type_key = rng.choice(challenge["shot_types"])
+    shot_type = rng.choice(data["shot_types"][shot_type_key])
 
-        subject_type = rng.choice(challenge["applies_to"])
-        subject = rng.choice(data["subjects"][subject_type])
-        modifier = rng.choice(challenge["items"])
-        return f"{subject} {modifier}"
-
-    else:
-        # Challenge subject × pose
-        challenges = data["challenge_subjects"]
-        names = list(challenges.keys())
-        ch_weights = [challenges[n]["weight"] for n in names]
-        chosen = rng.choices(names, weights=ch_weights, k=1)[0]
-        challenge = challenges[chosen]
-
-        subject = rng.choice(challenge["items"])
-        pose = rng.choice(challenge["poses"])
-        return f"{subject}, {pose}"
+    scene = build_scene(rng, challenge)
+    return data["template"].format(shot_type=shot_type, scene=scene)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate unique image prompts.")
-    parser.add_argument("-n", type=int, default=10_000, help="Number of prompts (default: 10000)")
+    parser = argparse.ArgumentParser(description="Generate unique video prompts.")
+    parser.add_argument("-n", type=int, default=1000, help="Number of prompts (default: 1000)")
     parser.add_argument("-o", "--output", type=str, default=str(DATA_DIR / "prompts.txt"),
                         help="Output file path")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")

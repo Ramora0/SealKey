@@ -26,7 +26,10 @@ REPO_URL = "https://github.com/WeChatCV/Wan-Alpha.git"
 
 HF_REPOS = {
     "wan21_t2v_14b": ("Wan-AI/Wan2.1-T2V-14B", None),
-    "wan_alpha": ("htdong/Wan-Alpha", ["decoder.bin", "epoch-13-1500.safetensors"]),
+    "wan_alpha": (
+        "htdong/Wan-Alpha-v2.0",
+        ["decoder.bin", "t2v.safetensors", "gauss_mask"],
+    ),
     "lightx2v": (
         "Kijai/WanVideo_comfy",
         ["Lightx2v/lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16.safetensors"],
@@ -72,10 +75,10 @@ def download_weights():
     return paths
 
 
-def gauss_mask_path() -> Path:
-    p = REPO_DIR / "gauss_mask"
+def gauss_mask_path(weights_root: Path) -> Path:
+    p = weights_root / "gauss_mask"
     if not p.exists():
-        raise FileNotFoundError(f"Expected pre-made mask at {p}; re-clone the repo.")
+        raise FileNotFoundError(f"Expected gauss_mask at {p}; re-download v2 weights.")
     return p
 
 
@@ -117,14 +120,14 @@ def main():
 
     wan21 = paths["wan21_t2v_14b"]
     decoder = paths["wan_alpha"] / "decoder.bin"
-    lora = paths["wan_alpha"] / "epoch-13-1500.safetensors"
+    lora = paths["wan_alpha"] / "t2v.safetensors"
     lightx2v = (
         paths["lightx2v"]
         / "Lightx2v"
         / "lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16.safetensors"
     )
 
-    mask_cache = gauss_mask_path()
+    mask_cache = gauss_mask_path(paths["wan_alpha"])
     prompt_file = write_prompt_file(args.prompt)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,268 +1,410 @@
 {
-  "subjects": {
-    "people": [
-      "a woman", "a man", "a young woman", "a young man",
-      "a child", "a teenager", "an elderly man", "an elderly woman",
-      "a couple", "a businessman", "a businesswoman", "a chef",
-      "a doctor", "a nurse", "a soldier", "a firefighter",
-      "a construction worker", "a police officer", "a pilot",
-      "a ballet dancer", "a singer", "an athlete", "a boxer",
-      "a gymnast", "a guitarist", "a painter", "a mechanic",
-      "a waiter", "a teacher", "a photographer", "a bride",
-      "a graduate in cap and gown", "a barista", "a runner",
-      "a soccer player", "a basketball player", "a skateboarder",
-      "a cyclist", "a cowboy", "a yoga instructor"
-    ],
-    "animals": [
-      "a cat", "a dog", "a kitten", "a puppy",
-      "a golden retriever", "a german shepherd", "a husky",
-      "a labrador", "a french bulldog", "a corgi", "a beagle",
-      "a border collie", "a tabby cat", "a black cat",
-      "a white cat", "a ginger cat", "a parrot", "a rabbit",
-      "a hamster", "a horse", "a butterfly", "a frog",
-      "a duck", "a chicken", "a fox", "a deer",
-      "an eagle", "a swan", "a flamingo", "a penguin",
-      "a lizard", "a chameleon", "a tropical fish", "a turtle"
-    ],
-    "objects": [
-      "a red sneaker", "a white running shoe", "a high heel shoe",
-      "a leather boot", "a wristwatch", "a handbag", "a backpack",
-      "a baseball cap", "a smartphone", "a laptop", "a tablet",
-      "a pair of headphones", "a camera", "a water bottle",
-      "a coffee mug", "a blender", "a toaster", "a kettle",
-      "a coffee machine", "a perfume bottle", "a lipstick",
-      "a candle", "a desk lamp", "a bluetooth speaker",
-      "a keyboard", "a microphone", "a pair of scissors",
-      "a pen", "a notebook", "a hardcover book",
-      "a gift box with a bow", "a teddy bear", "a toy car",
-      "a basketball", "a soccer ball", "a tennis racket",
-      "a yoga mat", "a dumbbell", "a skateboard",
-      "a suitcase", "a umbrella", "a plant pot",
-      "a throw pillow", "a picture frame", "a wall clock",
-      "a vase", "a wooden chair", "an office chair",
-      "a potted plant", "a bouquet of roses", "a sunflower",
-      "a small tree", "a cactus", "a fern",
-      "an acoustic guitar", "a violin", "a trumpet",
-      "a saxophone", "a car", "a motorcycle", "a bicycle",
-      "a trophy", "a globe", "a hammer", "a wrench",
-      "a flashlight", "a watering can", "a rocking horse"
-    ],
-    "food": [
-      "a red apple", "a banana", "a bunch of grapes",
-      "a strawberry", "a sliced orange", "a pineapple",
-      "a watermelon slice", "an avocado", "a lemon", "a mango",
-      "a cherry", "a peach", "a pomegranate", "a tomato",
-      "a red pepper", "a carrot", "a head of broccoli",
-      "an ear of corn", "a mushroom", "a chili pepper",
-      "a loaf of bread", "a croissant", "a donut", "a cupcake",
-      "a slice of pizza", "a hamburger", "a taco",
-      "a bowl of ramen", "an ice cream cone",
-      "a piece of chocolate cake", "a stack of pancakes",
-      "a cup of coffee", "a glass of orange juice", "a smoothie"
-    ]
+  "template": "{shot_type}. {scene}. The background of this video is transparent. Realistic style.",
+
+  "shot_types": {
+    "close_up": ["Close-up", "Extreme close-up"],
+    "medium": ["Medium shot"],
+    "wide": ["Wide shot", "Full body shot"]
   },
 
-  "poses": {
-    "people": [
-      "standing", "sitting", "smiling", "waving",
-      "walking", "looking at camera", "posing", "laughing",
-      "with arms crossed", "with hands on hips",
-      "looking to the side", "kneeling", "crouching",
-      "running", "jumping", "stretching"
-    ],
-    "animals": [
-      "sitting", "lying down", "standing", "looking at camera",
-      "running", "playing", "sleeping", "eating",
-      "looking to the side", "curled up"
-    ],
-    "objects": [
-      "on a table", "on a white background", "on a wooden surface",
-      "on a shelf", "on a dark background", "on a pedestal",
-      "floating", "on a marble countertop"
-    ],
-    "food": [
-      "on a plate", "on a table", "on a cutting board",
-      "on a white background", "in a bowl", "on a wooden surface",
-      "on a dark background"
-    ]
-  },
+  "challenges": {
+    "hair_motion": {
+      "weight": 12,
+      "description": "Fine/moving hair — sub-pixel strands + motion blur",
+      "type": "multiplicative",
+      "shot_types": ["close_up", "medium"],
+      "format": "{subject} {modifier} {motion}",
+      "subjects": [
+        "A woman", "A young woman", "A man", "A young man",
+        "A girl", "A boy", "A dancer", "An athlete",
+        "A knight", "A princess", "A sorceress", "A pirate",
+        "A viking", "A medieval queen"
+      ],
+      "modifiers": [
+        "with long flowing hair",
+        "with wispy blonde hair",
+        "with curly hair",
+        "with fine thin hair",
+        "with messy windblown hair",
+        "with a big curly afro",
+        "with long wild hair"
+      ],
+      "motions": [
+        "spinning",
+        "running",
+        "walking quickly",
+        "dancing",
+        "shaking their head",
+        "tossing their hair",
+        "turning around quickly",
+        "running in the wind"
+      ]
+    },
 
-  "challenge_modifiers": {
-    "fine_hair": {
+    "sheer_fabric_motion": {
       "weight": 10,
-      "applies_to": ["people"],
-      "items": [
-        "with thin messy hair",
-        "with loose hair blowing in the wind",
-        "with wild frizzy hair",
-        "with very fine thin hair",
-        "with messy tangled hair",
-        "with big puffy curly hair",
-        "with long hair blowing around",
-        "with hair sticking up everywhere",
-        "with loose strands of hair everywhere",
-        "with a big messy afro",
-        "with long wild curly hair",
-        "with thin wispy hair"
+      "description": "Semi-transparent fabrics in motion — partial alpha + dynamics",
+      "type": "multiplicative",
+      "shot_types": ["medium", "wide"],
+      "format": "{subject} {modifier} {motion}",
+      "subjects": [
+        "A woman", "A young woman", "A dancer", "A bride",
+        "A ballerina", "A sorceress", "A priestess", "A goddess",
+        "A fairy"
+      ],
+      "modifiers": [
+        "in a thin see-through skirt",
+        "in a flowing lacy dress",
+        "in a sheer white dress",
+        "wearing a long thin veil",
+        "in a see-through blouse",
+        "wearing a mesh top",
+        "in a chiffon gown",
+        "wearing a long flowing veil",
+        "in flowing silk robes",
+        "wearing a long translucent cape",
+        "in a gossamer gown",
+        "wearing a sheer hooded cloak"
+      ],
+      "motions": [
+        "twirling",
+        "spinning",
+        "walking",
+        "running",
+        "dancing",
+        "turning around",
+        "walking in the wind",
+        "casting a spell with sparks",
+        "raising their arms dramatically"
       ]
     },
-    "light_hair": {
-      "weight": 6,
-      "applies_to": ["people"],
-      "items": [
-        "with blonde hair",
-        "with white hair",
-        "with silver hair",
-        "with light gray hair",
-        "with pale blonde hair",
-        "with bright white hair",
-        "with pale golden hair",
-        "with light strawberry blonde hair"
-      ]
-    },
-    "sheer_clothing": {
-      "weight": 8,
-      "applies_to": ["people"],
-      "items": [
-        "in a see-through shirt",
-        "wearing a thin veil",
-        "in a see-through dress",
-        "wearing a thin lacy dress",
-        "in a mesh top",
-        "in a see-through raincoat",
-        "wearing a thin white dress you can see through",
-        "in a see-through lacy top",
-        "wearing a thin net shawl",
-        "in a see-through plastic jacket"
-      ]
-    },
-    "fuzzy_clothing": {
-      "weight": 6,
-      "applies_to": ["people"],
-      "items": [
-        "wearing a furry coat",
-        "wearing a feathery scarf",
-        "in a fuzzy sweater",
-        "wearing a jacket with long fringe",
-        "in a fluffy fur jacket",
-        "wearing feathered wings",
-        "in a feathery costume",
-        "wearing a big fluffy fur hat",
-        "in a fuzzy fleece jacket"
-      ]
-    },
-    "green_adjacent": {
-      "weight": 4,
-      "applies_to": ["people"],
-      "items": [
-        "in a yellow-green shirt",
-        "wearing an olive green dress",
-        "in a lime green jacket",
-        "wearing a bright green top",
-        "in a sage green shirt",
-        "wearing a mint green dress",
-        "in an army green jacket",
-        "wearing a neon green vest"
-      ]
-    },
-    "atmospheric": {
-      "weight": 6,
-      "applies_to": ["people", "animals"],
-      "items": [
-        "in fog",
-        "with smoke around them",
-        "in mist",
-        "in light rain",
-        "in dust",
-        "with steam around them",
-        "in thick fog",
-        "with visible breath in cold air"
-      ]
-    },
-    "complex_silhouette": {
-      "weight": 6,
-      "applies_to": ["people"],
-      "items": [
-        "with water splashing around them",
-        "throwing confetti",
-        "surrounded by bubbles",
-        "with paint splattering around them",
-        "with flower petals falling around them",
-        "with feathers in the air around them",
-        "with glitter in the air",
-        "with leaves blowing around them",
-        "holding sparklers"
-      ]
-    }
-  },
 
-  "challenge_subjects": {
+    "cape_cloak_motion": {
+      "weight": 8,
+      "description": "Capes, cloaks, robes in motion — opaque flowing fabric edges",
+      "type": "multiplicative",
+      "shot_types": ["medium", "wide"],
+      "format": "{subject} {modifier} {motion}",
+      "subjects": [
+        "A knight", "A medieval warrior", "A wizard",
+        "A cloaked figure", "A superhero", "A viking",
+        "A samurai", "A pirate", "A king", "A ranger"
+      ],
+      "modifiers": [
+        "in a long flowing cape",
+        "wearing a heavy wool cloak",
+        "in a torn battle cloak",
+        "wearing a hooded cape",
+        "in flowing robes",
+        "wearing a long leather coat",
+        "in a billowing cloak"
+      ],
+      "motions": [
+        "walking",
+        "running",
+        "turning dramatically",
+        "walking into the wind",
+        "leaping",
+        "striding forward",
+        "spinning to face the camera"
+      ]
+    },
+
+    "action_combat": {
+      "weight": 8,
+      "description": "Combat motion — limb + weapon + fabric all moving",
+      "type": "scene_list",
+      "shot_types": ["medium", "wide"],
+      "scenes": [
+        "A knight in armor swinging a sword",
+        "A samurai drawing a katana",
+        "An archer drawing a bow and releasing an arrow",
+        "A martial artist performing a spin kick",
+        "A ninja leaping through the air",
+        "A warrior blocking with a shield",
+        "A boxer throwing a powerful punch",
+        "A gladiator swinging a weapon",
+        "A woman with a spear lunging forward",
+        "A knight raising a sword overhead",
+        "A viking swinging a battle axe",
+        "A martial artist breaking a board",
+        "A swordsman parrying an attack",
+        "A fencer lunging forward",
+        "A monk performing a staff spin",
+        "A cowboy drawing a pistol",
+        "A soldier firing a rifle"
+      ]
+    },
+
+    "translucent_characters": {
+      "weight": 6,
+      "description": "Semi-transparent whole-body subjects — prime matting challenge",
+      "type": "scene_list",
+      "shot_types": ["medium", "wide", "close_up"],
+      "scenes": [
+        "A translucent ghost drifting through the air",
+        "A ghostly figure in a tattered cloak",
+        "A pale spirit walking",
+        "A semi-transparent apparition floating",
+        "A ghostly woman in a flowing white gown",
+        "A wispy spirit rising",
+        "A translucent fairy with glowing wings",
+        "A luminous spirit of a warrior",
+        "A ghostly figure reaching out with one hand",
+        "A shimmering water spirit",
+        "A pale wraith with a hood",
+        "A translucent phantom in armor",
+        "A glowing elemental being",
+        "A misty figure slowly dissolving"
+      ]
+    },
+
+    "fluids": {
+      "weight": 10,
+      "description": "Inherently semi-transparent and dynamic",
+      "type": "scene_list",
+      "shot_types": ["close_up", "medium"],
+      "scenes": [
+        "Water pouring from a glass pitcher into a cup",
+        "A splash of water",
+        "Water being poured into a clear glass",
+        "Soap bubbles floating and popping",
+        "A single soap bubble drifting through the air",
+        "Water flowing from a tap into a sink",
+        "Ice cubes dropping into a glass of water",
+        "Champagne being poured into a flute",
+        "Rain falling against a dark background",
+        "Water droplets falling",
+        "A water balloon bursting",
+        "Coffee being poured into a cup",
+        "Milk being poured into a glass",
+        "A wave of water splashing up",
+        "Water dripping from a faucet",
+        "Bubbles rising in a glass of soda"
+      ]
+    },
+
     "transparent_objects": {
       "weight": 8,
-      "items": [
-        "a glass of water", "a glass of wine", "a crystal ball",
-        "a glass vase with flowers", "a wine glass", "a glass bottle",
-        "a glass pitcher", "a clear glass teapot", "a fishbowl",
-        "a snow globe", "a glass chess piece", "a glass sculpture",
-        "a pair of eyeglasses", "a glass jar", "a terrarium",
-        "a glass perfume bottle", "a cocktail in a clear glass",
-        "a clear glass ornament", "a glass of beer",
-        "a glass marble", "a magnifying glass",
-        "a clear glass lamp", "a glass paperweight"
-      ],
-      "poses": [
-        "on a table", "on a white background", "on a dark background",
-        "on a wooden surface", "floating", "on a shelf",
-        "on a marble countertop", "on a pedestal"
+      "description": "Glass, crystal, clear objects — with and without motion",
+      "type": "scene_list",
+      "shot_types": ["close_up", "medium"],
+      "scenes": [
+        "A wine glass being filled with red wine",
+        "A clear glass slowly filling with water",
+        "Ice cubes clinking together in a whiskey glass",
+        "A crystal ball rotating slowly",
+        "A glass bottle tipping over",
+        "A prism rotating and refracting light",
+        "A hand lifting a wine glass",
+        "A crystal chandelier swaying gently",
+        "A glass marble rolling across a surface",
+        "A snow globe being shaken",
+        "A magnifying glass being moved across a surface",
+        "A glass perfume bottle being sprayed",
+        "A glass vase with flowers",
+        "A terrarium with plants inside",
+        "A fishbowl with a fish swimming inside"
       ]
     },
-    "reflective_objects": {
-      "weight": 6,
-      "items": [
-        "a chrome kettle", "a polished silver plate",
-        "a chrome robot figurine", "a shiny metal helmet",
-        "a polished sword", "a diamond ring",
-        "a metallic sculpture", "a trophy",
-        "a shiny silver spoon", "a chrome faucet",
-        "a polished brass bell", "a silver candlestick",
-        "a chrome toaster", "a shiny metal thermos",
-        "a gold watch"
-      ],
-      "poses": [
-        "on a table", "on a white background", "on a dark background",
-        "on a wooden surface", "on a shelf", "on a pedestal",
-        "on a marble countertop"
+
+    "smoke_mist": {
+      "weight": 8,
+      "description": "Smoke, steam, fog, mist — gradient partial alpha",
+      "type": "scene_list",
+      "shot_types": ["medium", "close_up"],
+      "scenes": [
+        "Steam rising from a cup of coffee",
+        "Smoke drifting slowly upward",
+        "Mist swirling in the air",
+        "Steam rising from a hot bowl of soup",
+        "Smoke curling from a stick of incense",
+        "Fog slowly rolling past",
+        "A woman exhaling visible breath in cold air",
+        "Steam rising from a teapot spout",
+        "Smoke drifting from a just-blown-out candle",
+        "A person standing as smoke drifts around them",
+        "Dust particles floating in the air",
+        "Mist rising from a cup",
+        "Steam billowing from a kettle",
+        "Smoke swirling in the wind"
       ]
     },
-    "fuzzy_animals": {
-      "weight": 6,
-      "items": [
-        "a fluffy white cat", "a long-haired persian cat",
-        "a fluffy pomeranian", "a fluffy poodle", "a shaggy collie",
-        "a fluffy samoyed", "a long-haired golden retriever",
-        "a fluffy angora rabbit", "a cockatoo with raised feathers",
-        "a peacock with spread tail feathers", "an owl with ruffled feathers",
-        "a fluffy chick", "a fuzzy bumblebee",
-        "a hairy tarantula", "a fluffy duckling",
-        "a shaggy highland cow"
+
+    "fuzzy_motion": {
+      "weight": 8,
+      "description": "Fur, feathers, fuzzy materials with motion",
+      "type": "scene_list",
+      "shot_types": ["medium", "wide", "close_up"],
+      "scenes": [
+        "A fluffy golden retriever running",
+        "A long-haired persian cat walking",
+        "A fluffy pomeranian shaking itself",
+        "A peacock displaying and turning its feathered tail",
+        "A cockatoo raising its crest",
+        "An owl ruffling its feathers",
+        "A fluffy samoyed dog trotting",
+        "A long-haired cat sitting and grooming itself",
+        "A fluffy white rabbit hopping",
+        "A shaggy collie walking",
+        "A woman in a fur coat walking past",
+        "A dancer in a feathered costume spinning",
+        "A woman with a feather boa walking",
+        "A chicken flapping its wings",
+        "A dandelion puff blowing apart in the wind"
+      ]
+    },
+
+    "green_adjacent_motion": {
+      "weight": 5,
+      "description": "Colors near green screen — color contamination risk + motion",
+      "type": "multiplicative",
+      "shot_types": ["medium", "wide"],
+      "format": "{subject} {modifier} {motion}",
+      "subjects": [
+        "A woman", "A man", "A young woman", "A young man",
+        "A child", "A dancer"
       ],
-      "poses": [
-        "sitting", "lying down", "standing", "looking at camera",
-        "playing", "sleeping", "curled up"
+      "modifiers": [
+        "in a lime green shirt",
+        "in an olive dress",
+        "in a yellow-green jacket",
+        "wearing a chartreuse top",
+        "in a sage green blouse",
+        "wearing a neon green shirt",
+        "in a mint green dress",
+        "in an army green jacket"
+      ],
+      "motions": [
+        "walking",
+        "spinning",
+        "dancing",
+        "running",
+        "waving at the camera",
+        "turning around"
+      ]
+    },
+
+    "light_hair_motion": {
+      "weight": 5,
+      "description": "Light/blonde/white hair — low contrast + motion",
+      "type": "multiplicative",
+      "shot_types": ["close_up", "medium"],
+      "format": "{subject} {modifier} {motion}",
+      "subjects": [
+        "A woman", "A young woman", "An elderly woman",
+        "A man", "An elderly man", "A child", "A teenager"
+      ],
+      "modifiers": [
+        "with platinum blonde hair",
+        "with white hair",
+        "with silver hair",
+        "with pale blonde hair",
+        "with light gray hair",
+        "with bright white hair"
+      ],
+      "motions": [
+        "walking",
+        "turning around",
+        "running",
+        "dancing",
+        "shaking their head",
+        "walking in the wind"
+      ]
+    },
+
+    "common_people": {
+      "weight": 15,
+      "description": "Baseline people videos — normal subjects, common actions",
+      "type": "multiplicative",
+      "shot_types": ["medium", "wide", "close_up"],
+      "format": "{subject} {motion}",
+      "subjects": [
+        "A woman", "A man", "A young woman", "A young man",
+        "A child", "An elderly woman", "An elderly man",
+        "A businessman", "A businesswoman", "A chef",
+        "A doctor", "A nurse", "A firefighter",
+        "A construction worker", "A waiter", "A teacher",
+        "A guitarist", "A singer", "An athlete",
+        "A runner", "A basketball player", "A skateboarder",
+        "A knight in armor", "A medieval queen", "A wizard",
+        "A samurai", "A cowboy", "A pirate", "A viking",
+        "An astronaut", "A fighter pilot", "A soldier in gear",
+        "A superhero", "A ninja", "A warrior",
+        "A person in a Victorian dress", "A flapper",
+        "A monk in robes", "A king on a throne"
+      ],
+      "motions": [
+        "waving at the camera",
+        "smiling at the camera",
+        "walking past",
+        "talking and gesturing",
+        "laughing",
+        "nodding",
+        "giving a thumbs up",
+        "clapping",
+        "turning to look at the camera",
+        "standing and posing",
+        "sitting and smiling",
+        "pointing at something"
+      ]
+    },
+
+    "common_animals": {
+      "weight": 8,
+      "description": "Baseline animal videos — pets and common creatures",
+      "type": "scene_list",
+      "shot_types": ["medium", "close_up"],
+      "scenes": [
+        "A golden retriever wagging its tail",
+        "A cat grooming itself",
+        "A puppy playing with a toy",
+        "A kitten pouncing",
+        "A dog running toward the camera",
+        "A cat stretching",
+        "A rabbit hopping",
+        "A parrot tilting its head",
+        "A hamster running on a wheel",
+        "A horse trotting",
+        "A butterfly flapping its wings",
+        "A fish swimming",
+        "A duck waddling",
+        "A chicken pecking at the ground",
+        "A dog shaking water off",
+        "A cat yawning"
+      ]
+    },
+
+    "common_objects": {
+      "weight": 12,
+      "description": "Product-style videos — static or simple motion",
+      "type": "scene_list",
+      "shot_types": ["medium", "close_up"],
+      "scenes": [
+        "A red sneaker rotating on a pedestal",
+        "A smartphone rotating slowly",
+        "A wristwatch rotating on display",
+        "A handbag being opened",
+        "A bouquet of roses being placed on a surface",
+        "A coffee mug being set down",
+        "A book being opened",
+        "A candle being lit",
+        "A perfume bottle being sprayed",
+        "A gift box being opened",
+        "A laptop being opened",
+        "A camera being picked up",
+        "A pair of headphones rotating",
+        "A basketball spinning",
+        "A skateboard rolling across the ground",
+        "A bicycle wheel spinning",
+        "An hourglass with sand falling through",
+        "A vintage typewriter with keys being pressed",
+        "A vinyl record spinning on a turntable",
+        "A pendulum swinging back and forth",
+        "An acoustic guitar being strummed",
+        "A violin being played",
+        "A flag waving in the wind"
       ]
     }
-  },
-
-  "weights": {
-    "common": 50,
-    "challenge_modifiers": 30,
-    "challenge_subjects": 20
-  },
-
-  "common_type_weights": {
-    "people": 35,
-    "animals": 15,
-    "objects": 30,
-    "food": 20
   }
 }
