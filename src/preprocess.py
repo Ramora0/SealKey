@@ -10,22 +10,26 @@ Two modes, selected by subcommand:
 Hint-channel generation is done at runtime by the dataloader using
 `src.hint_generators` — no hint files are stored here.
 
-Output per solo clip:
-    <output>/<clip>/input.<ext>    — degraded RGB composite (model input)
-    <output>/<clip>/gt_rgb.mkv     — clean pre-composite foreground RGB (FFV1)
-    <output>/<clip>/gt_alpha.mkv   — clean matte (FFV1)
+Output per solo sample:
+    <output>/solo_<i>/input.<ext>   — degraded RGB composite (model input)
+    <output>/solo_<i>/gt.mkv        — clean pre-composite foreground RGBA
+                                       (FFV1 yuva444p: lossless RGB + alpha)
+    <output>/solo_<i>/manifest.json — source clip + seed + GS profile
 
 Output per double clip:
-    <output>/double_<i>/input.<ext>               — multi-subject composite
-    <output>/double_<i>/gt_rgb_target.mkv         — clean target RGB (FFV1)
-    <output>/double_<i>/gt_alpha_target.mkv       — clean target alpha (FFV1)
-    <output>/double_<i>/gt_rgb_distractor.mkv     — clean distractor RGB (FFV1)
-    <output>/double_<i>/gt_alpha_distractor.mkv   — distractor alpha masked by
-                                                     target (FFV1)
-    <output>/double_<i>/manifest.json             — source clips + placement
+    <output>/double_<i>/input.<ext>     — multi-subject composite
+    <output>/double_<i>/gt_target.mkv   — clean target RGBA (FFV1 yuva444p)
+    <output>/double_<i>/gt_all.mkv      — target ∪ visible distractor, target
+                                           composited on top; RGBA (FFV1 yuva444p)
+    <output>/double_<i>/manifest.json   — source clips + placement
+
+Training uses either gt_target for target-specific hints, or gt_all for
+"everything in frame" hints. Distractor-only supervision is intentionally
+absent — it can be impossible when occluded by the target.
 
 Degraded `input` extension varies by rolled codec (see augment.CODECS). GT
-streams are always FFV1 in .mkv — lossless, 4:4:4, built into every ffmpeg.
+streams are always FFV1 yuva444p in .mkv — lossless, 4:4:4 chroma + alpha,
+built into every ffmpeg.
 
 Layout expected for --input (both modes): one or more paths. Each may be
     - A clip directory containing RGBA PNG frames, OR
@@ -36,24 +40,24 @@ Layout expected for --input (both modes): one or more paths. Each may be
 Zips are unpacked in-place into a sibling directory named by the zip's stem.
 Unpacking is idempotent — existing populated target dirs are not touched.
 
-All preprocessing is 100% resumable: each clip's output is checked before
-work. A solo clip is skipped if `input.*` and `alpha.*` both exist; a
-double is skipped if `input.*`, `alpha_target.*`, `alpha_distractor.*`, and
-`manifest.json` all exist. Delete partial outputs to force a rerun.
+All preprocessing is 100% resumable: each sample's output dir is checked
+before work. A sample is skipped if its `input.*`, GT streams, and
+`manifest.json` are all present. Delete partial outputs to force a rerun.
 
 Usage:
     python -m src.preprocess solos \\
         --input raw_clips/ /fs/scratch/.../sealkey_wan_alpha \\
-        --output solos/ --workers 8
+        --output solos/ --count 5000
     python -m src.preprocess doubles \\
         --input raw_clips/ /fs/scratch/.../sealkey_wan_alpha \\
-        --output doubles/ --count 5000 --workers 8
+        --output doubles/ --count 5000
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import tempfile
 import zipfile
@@ -155,8 +159,8 @@ def _solo_done(clip_out: Path) -> bool:
     return (
         clip_out.is_dir()
         and any(clip_out.glob("input.*"))
-        and (clip_out / "gt_rgb.mkv").exists()
-        and (clip_out / "gt_alpha.mkv").exists()
+        and (clip_out / "gt.mkv").exists()
+        and (clip_out / "manifest.json").exists()
     )
 
 
@@ -165,10 +169,12 @@ def preprocess_solo(
     clip_out: Path,
     seed: int,
     fps: int = 24,
+    threads: int = 0,
 ) -> None:
-    """Trajectory → composite → augment. Writes input.<ext> + gt_rgb.mkv + gt_alpha.mkv.
+    """Trajectory → composite → augment. Writes input.<ext> + gt_rgb.mkv +
+    gt_alpha.mkv + manifest.json.
 
-    Idempotent: if all three outputs already exist, returns immediately.
+    Idempotent: if all outputs already exist, returns immediately.
     """
     if _solo_done(clip_out):
         return
@@ -183,16 +189,22 @@ def preprocess_solo(
         a_dir   = tmp / "alpha";   a_dir.mkdir()  # clean alpha
 
         _subject_trajectory(clip_in, moved, rng)
-        _composite_solo(moved, comp, fg_rgb, a_dir, rng)
+        gs_profile = _composite_solo(moved, comp, fg_rgb, a_dir, rng)
         augment_multi(
             input_rgb_dir=comp,
-            gt_rgb_dirs=[fg_rgb],  gt_rgb_labels=["gt_rgb"],
-            alpha_dirs=[a_dir],    alpha_labels=["gt_alpha"],
+            gt_pairs=[(fg_rgb, a_dir, "gt")],
             output_dir=clip_out,
             seed=int(rng.integers(0, 2**31)),
             fps=fps,
             skip={"geometric"},
+            threads=threads,
         )
+
+    (clip_out / "manifest.json").write_text(json.dumps({
+        "source": clip_in.name,
+        "gs_profile": gs_profile,
+        "seed": seed,
+    }, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -250,15 +262,17 @@ def _compose_double(target_paths: list[Path],
                     out_comp_dir: Path,
                     out_target_rgb_dir: Path,
                     out_target_alpha_dir: Path,
-                    out_distractor_rgb_dir: Path,
-                    out_distractor_alpha_dir: Path) -> None:
-    """Composite bg → distractor → target (writes degraded input), and also
-    emit clean per-subject RGB + alpha on canvas-sized transparent planes.
+                    out_all_rgb_dir: Path,
+                    out_all_alpha_dir: Path) -> None:
+    """Composite bg → distractor → target (writes degraded input), and emit
+    two GT foreground streams:
+        target — just the target, full alpha.
+        all    — union of target + visible distractor, compositing target on
+                 top of distractor on a transparent bg.
 
-    Target streams are full. Distractor alpha is masked by the target (so the
-    two GT alphas are disjoint, matching what's actually visible in the
-    composite); distractor RGB is left unmasked — the alpha handles occlusion
-    in any compositing loss."""
+    No distractor-only stream: the distractor can be partially occluded, so
+    supervising on distractor-alone is sometimes impossible. Training modes
+    use either target-only or all; never distractor-only."""
     gs_f = gs_bg.astype(np.float32)
     n = min(len(target_paths), len(distractor_paths))
 
@@ -280,20 +294,32 @@ def _compose_double(target_paths: list[Path],
         d_a_u8 = d_on_canvas[..., 3]
         d_a = (d_a_u8.astype(np.float32) / 255.0)[..., None]
 
+        # Degraded input: bg → distractor → target
         comp = gs_f * (1.0 - d_a) + d_rgb.astype(np.float32) * d_a
         comp = comp * (1.0 - t_a) + t_rgb.astype(np.float32) * t_a
         comp_u8 = np.clip(comp, 0, 255).astype(np.uint8)
 
-        distractor_alpha_masked = np.clip(
+        # gt_all: target ∪ visible-distractor on transparent bg.
+        # distractor_alpha masked by target (disjoint from target_alpha).
+        d_a_visible = np.clip(
             d_a_u8.astype(np.float32) * (1.0 - t_a[..., 0]), 0, 255,
+        ).astype(np.uint8)
+        # RGB: target wherever target is present, distractor elsewhere.
+        # (In regions where both alpha are 0, the RGB value is undefined but
+        # multiplied by alpha=0 in any compositing loss, so it doesn't matter.)
+        use_target = (t_a_u8 > 0)[..., None]
+        rgb_all = np.where(use_target, t_rgb, d_rgb)
+        # Disjoint by construction, so union = sum (safely clipped).
+        alpha_all = np.clip(
+            t_a_u8.astype(np.int32) + d_a_visible.astype(np.int32), 0, 255,
         ).astype(np.uint8)
 
         name = f"{i:06d}.png"
         cv2.imwrite(str(out_comp_dir / name), comp_u8)
         cv2.imwrite(str(out_target_rgb_dir / name), t_rgb)
         cv2.imwrite(str(out_target_alpha_dir / name), t_a_u8)
-        cv2.imwrite(str(out_distractor_rgb_dir / name), d_rgb)
-        cv2.imwrite(str(out_distractor_alpha_dir / name), distractor_alpha_masked)
+        cv2.imwrite(str(out_all_rgb_dir / name), rgb_all)
+        cv2.imwrite(str(out_all_alpha_dir / name), alpha_all)
 
 
 def _double_done(clip_out: Path) -> bool:
@@ -301,10 +327,8 @@ def _double_done(clip_out: Path) -> bool:
     return (
         clip_out.is_dir()
         and any(clip_out.glob("input.*"))
-        and (clip_out / "gt_rgb_target.mkv").exists()
-        and (clip_out / "gt_alpha_target.mkv").exists()
-        and (clip_out / "gt_rgb_distractor.mkv").exists()
-        and (clip_out / "gt_alpha_distractor.mkv").exists()
+        and (clip_out / "gt_target.mkv").exists()
+        and (clip_out / "gt_all.mkv").exists()
         and (clip_out / "manifest.json").exists()
     )
 
@@ -315,6 +339,7 @@ def preprocess_double(
     clip_out: Path,
     seed: int,
     fps: int = 24,
+    threads: int = 0,
 ) -> None:
     """Build one double clip. Writes input + alpha_target + alpha_distractor
     + manifest.json under clip_out.
@@ -337,13 +362,13 @@ def preprocess_double(
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        t_moved = tmp / "t_moved"; t_moved.mkdir()
-        d_moved = tmp / "d_moved"; d_moved.mkdir()
-        comp    = tmp / "comp";    comp.mkdir()
-        t_rgb   = tmp / "t_rgb";   t_rgb.mkdir()
-        t_a     = tmp / "t_a";     t_a.mkdir()
-        d_rgb   = tmp / "d_rgb";   d_rgb.mkdir()
-        d_a     = tmp / "d_a";     d_a.mkdir()
+        t_moved   = tmp / "t_moved";   t_moved.mkdir()
+        d_moved   = tmp / "d_moved";   d_moved.mkdir()
+        comp      = tmp / "comp";      comp.mkdir()
+        t_rgb     = tmp / "t_rgb";     t_rgb.mkdir()
+        t_a       = tmp / "t_a";       t_a.mkdir()
+        all_rgb   = tmp / "all_rgb";   all_rgb.mkdir()
+        all_a     = tmp / "all_a";     all_a.mkdir()
 
         _subject_trajectory(clip_target,     t_moved, rng)
         _subject_trajectory(clip_distractor, d_moved, rng)
@@ -363,19 +388,20 @@ def preprocess_double(
         _compose_double(
             t_paths, d_paths, gs, canvas_hw,
             t_place, d_place,
-            comp, t_rgb, t_a, d_rgb, d_a,
+            comp, t_rgb, t_a, all_rgb, all_a,
         )
 
         augment_multi(
             input_rgb_dir=comp,
-            gt_rgb_dirs=[t_rgb, d_rgb],
-            gt_rgb_labels=["gt_rgb_target", "gt_rgb_distractor"],
-            alpha_dirs=[t_a, d_a],
-            alpha_labels=["gt_alpha_target", "gt_alpha_distractor"],
+            gt_pairs=[
+                (t_rgb, t_a, "gt_target"),
+                (all_rgb, all_a, "gt_all"),
+            ],
             output_dir=clip_out,
             seed=int(rng.integers(0, 2**31)),
             fps=fps,
             skip={"geometric"},
+            threads=threads,
         )
 
     manifest = {
@@ -469,17 +495,17 @@ def _prepare_inputs(input_paths: list[Path]) -> list[Path]:
     return sorted(clips)
 
 
-def _solo_worker(job: tuple[Path, Path, int, int]) -> tuple[str, bool]:
-    clip_in, clip_out, seed, fps = job
+def _solo_worker(job: tuple[Path, Path, int, int, int]) -> tuple[str, bool]:
+    clip_in, clip_out, seed, fps, threads = job
     skipped = _solo_done(clip_out)
-    preprocess_solo(clip_in, clip_out, seed=seed, fps=fps)
+    preprocess_solo(clip_in, clip_out, seed=seed, fps=fps, threads=threads)
     return clip_in.name, skipped
 
 
-def _double_worker(job: tuple[Path, Path, Path, int, int]) -> tuple[str, bool]:
-    clip_t, clip_d, clip_out, seed, fps = job
+def _double_worker(job: tuple[Path, Path, Path, int, int, int]) -> tuple[str, bool]:
+    clip_t, clip_d, clip_out, seed, fps, threads = job
     skipped = _double_done(clip_out)
-    preprocess_double(clip_t, clip_d, clip_out, seed=seed, fps=fps)
+    preprocess_double(clip_t, clip_d, clip_out, seed=seed, fps=fps, threads=threads)
     return clip_out.name, skipped
 
 
@@ -500,27 +526,76 @@ def _run_pool(worker, jobs, workers: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auto-parallelism: detect usable cores and split into workers × ffmpeg threads
+# ---------------------------------------------------------------------------
+
+def _usable_cores() -> int:
+    """Cores available to this process. Respects SLURM / cgroup affinity, so
+    a 40-core box with an 8-core allocation reports 8 — no oversubscription.
+    """
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:  # non-Linux
+        return max(1, os.cpu_count() or 1)
+
+
+def _auto_parallelism(workers: int | None, threads: int | None) -> tuple[int, int]:
+    """Pick (workers, threads) so workers*threads ~= usable cores, favoring
+    more workers (ffmpeg scaling flattens past ~4 threads, and our Python
+    stages are GIL-bound so extra workers always help).
+
+    Honors any user-supplied value; fills in the other side from cores.
+    """
+    cores = _usable_cores()
+    if workers is None and threads is None:
+        threads = min(4, cores)
+        workers = max(1, cores // threads)
+    elif workers is None:
+        workers = max(1, cores // max(1, threads))
+    elif threads is None:
+        threads = max(1, cores // max(1, workers))
+    return workers, threads
+
+
+# ---------------------------------------------------------------------------
 # Entry point — subcommands: solos, doubles
 # ---------------------------------------------------------------------------
 
 def _main_solos(args) -> None:
     base_seed = args.seed if args.seed is not None else random.randint(0, 2**31)
+    args.workers, args.threads = _auto_parallelism(args.workers, args.threads)
+    print(f"Parallelism: {args.workers} workers × {args.threads} ffmpeg threads "
+          f"(usable cores: {_usable_cores()}).")
     clips = _prepare_inputs(args.input)
     if not clips:
         raise SystemExit(f"No clips found under {args.input}")
-    print(f"Discovered {len(clips)} source clips.")
+    print(f"Discovered {len(clips)} source clips, generating {args.count} solos.")
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # Each sample gets a random source clip; every clip is guaranteed to appear
+    # at least once before any clip repeats (shuffled then cycled). Per-sample
+    # seed ensures repeats get independent augmentation rolls.
+    sampler = np.random.default_rng(base_seed)
+    order: list[int] = []
+    while len(order) < args.count:
+        perm = sampler.permutation(len(clips)).tolist()
+        order.extend(perm)
+    order = order[:args.count]
+
     jobs = [
-        (clip_in, args.output / clip_in.name, base_seed + i, args.fps)
-        for i, clip_in in enumerate(clips)
+        (clips[idx], args.output / f"solo_{i:05d}",
+         base_seed + i + 1, args.fps, args.threads)
+        for i, idx in enumerate(order)
     ]
     _run_pool(_solo_worker, jobs, args.workers)
-    print(f"\nDone — {len(jobs)} solo clips written under {args.output}/")
+    print(f"\nDone — {args.count} solos written under {args.output}/")
 
 
 def _main_doubles(args) -> None:
     base_seed = args.seed if args.seed is not None else random.randint(0, 2**31)
+    args.workers, args.threads = _auto_parallelism(args.workers, args.threads)
+    print(f"Parallelism: {args.workers} workers × {args.threads} ffmpeg threads "
+          f"(usable cores: {_usable_cores()}).")
     clips = _prepare_inputs(args.input)
     if len(clips) < 2:
         raise SystemExit(f"Need at least 2 source clips under {args.input}, found {len(clips)}")
@@ -537,6 +612,7 @@ def _main_doubles(args) -> None:
             args.output / f"double_{i:05d}",
             base_seed + i + 1,
             args.fps,
+            args.threads,
         ))
     _run_pool(_double_worker, jobs, args.workers)
     print(f"\nDone — {args.count} doubles written under {args.output}/")
@@ -564,10 +640,17 @@ def main():
                         help="Output root. Existing completed clips are skipped.")
         sp.add_argument("--fps", type=int, default=24)
         sp.add_argument("--seed", type=int, default=None)
-        sp.add_argument("--workers", type=int, default=1)
-        if name == "doubles":
-            sp.add_argument("--count", type=int, required=True,
-                            help="Number of doubles to generate.")
+        sp.add_argument("--workers", type=int, default=None,
+                        help="Parallel worker processes. Default: auto — "
+                             "chosen so workers*threads ~= usable cores, "
+                             "favoring more workers.")
+        sp.add_argument("--threads", type=int, default=None,
+                        help="ffmpeg -threads per worker. Default: auto — "
+                             "min(4, cores). ffmpeg scaling flattens past ~4.")
+        sp.add_argument("--count", type=int, default=5000,
+                        help="Number of samples to generate. Clips are sampled "
+                             "with replacement if count > pool size; each "
+                             "sample gets an independent augmentation roll.")
 
     args = parser.parse_args()
     if args.mode == "solos":

@@ -189,33 +189,31 @@ def main() -> None:
     # 1. Run one randomized augmentation via preprocess_solo.
     if not args.keep_existing:
         for old in (list(args.output.glob("input.*"))
-                    + list(args.output.glob("gt_rgb.*"))
-                    + list(args.output.glob("gt_alpha.*"))):
+                    + list(args.output.glob("gt.mkv"))
+                    + list(args.output.glob("manifest.json"))):
             old.unlink()
     preprocess_solo(clip_in, args.output, seed=seed, fps=args.fps)
 
     input_videos = list(args.output.glob("input.*"))
-    gt_rgb_path = args.output / "gt_rgb.mkv"
-    gt_alpha_path = args.output / "gt_alpha.mkv"
-    if not input_videos or not gt_rgb_path.exists() or not gt_alpha_path.exists():
+    gt_path = args.output / "gt.mkv"
+    if not input_videos or not gt_path.exists():
         raise SystemExit(f"preprocess_solo did not produce all expected outputs under {args.output}")
     input_video = input_videos[0]
-    print(f"[preprocess] seed={seed}  input={input_video.name}  "
-          f"gt_rgb={gt_rgb_path.name}  gt_alpha={gt_alpha_path.name}")
+    print(f"[preprocess] seed={seed}  input={input_video.name}  gt={gt_path.name}")
 
     settings_path = args.output / "augment_settings.json"
     if settings_path.exists():
         print(f"[augment settings] (from {settings_path.name})")
         print(json.dumps(json.loads(settings_path.read_text()), indent=2))
 
-    # 2. Decode all three streams back to frames.
+    # 2. Decode both streams back to frames. gt.mkv carries 4-channel RGBA
+    # via FFV1 yuva444p; ffmpeg writes RGBA PNGs from it natively.
     decoded_root = args.output / "_decoded"
     if decoded_root.exists():
         shutil.rmtree(decoded_root)
-    input_frames = _decode_video(input_video,    decoded_root / "input")
-    gt_rgb_frames = _decode_video(gt_rgb_path,   decoded_root / "gt_rgb")
-    gt_alpha_frames = _decode_video(gt_alpha_path, decoded_root / "gt_alpha")
-    n = min(len(input_frames), len(gt_rgb_frames), len(gt_alpha_frames))
+    input_frames = _decode_video(input_video, decoded_root / "input")
+    gt_frames    = _decode_video(gt_path,     decoded_root / "gt")
+    n = min(len(input_frames), len(gt_frames))
     if n == 0:
         raise SystemExit("No frames decoded from preprocess output.")
     print(f"[decode] {n} frames")
@@ -238,20 +236,21 @@ def main() -> None:
 
     for i in range(n):
         rgb = cv2.imread(str(input_frames[i]), cv2.IMREAD_COLOR)
-        gt_rgb = cv2.imread(str(gt_rgb_frames[i]), cv2.IMREAD_COLOR)
-        gt_alpha = cv2.imread(str(gt_alpha_frames[i]), cv2.IMREAD_GRAYSCALE)
-        if rgb is None or gt_rgb is None or gt_alpha is None:
+        gt_rgba = cv2.imread(str(gt_frames[i]), cv2.IMREAD_UNCHANGED)
+        if rgb is None or gt_rgba is None:
             continue
+        if gt_rgba.ndim != 3 or gt_rgba.shape[2] != 4:
+            raise SystemExit(f"Expected 4-channel RGBA from gt.mkv, got {gt_rgba.shape}")
+        gt_rgb = gt_rgba[..., :3]
+        gt_alpha = gt_rgba[..., 3]
         th, tw = rgb.shape[:2]
         if gt_rgb.shape[:2] != (th, tw):
             gt_rgb = cv2.resize(gt_rgb, (tw, th), interpolation=cv2.INTER_LINEAR)
-        if gt_alpha.shape[:2] != (th, tw):
             gt_alpha = cv2.resize(gt_alpha, (tw, th), interpolation=cv2.INTER_LINEAR)
         frame_rng = np.random.default_rng(hint_seed)
         # Hints are derived from the degraded input for chroma/chroma_gated
         # (that's what the user actually has at inference) but from the GT
-        # alpha for trimap/box/gated — those are simulating a human-drawn
-        # matte, which is clean.
+        # alpha for trimap/box/gated — those simulate a human-drawn matte.
         _, hint = _make_hint(hint_kind, rgb, gt_alpha, frame_rng)
         panel = _stack_side_by_side(rgb, gt_rgb, gt_alpha, hint, hint_kind)
         cv2.imwrite(str(frames_dir / f"{i:06d}.png"), panel)

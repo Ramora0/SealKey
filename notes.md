@@ -14,6 +14,17 @@ Over Corridorkey:
 4. Much more comprehensive data
 5. No licensing issues
 
+## Data
+
+Wan alpha generated 1k video clips, oversampling tricky green screen situations like thing cloth, messy hair, and transparency in general.
+We then did extensive data augmentation, including:
+- Randomly moving and jittering the images
+- Placing them in front of extremely varied green screens which range from blue to green with wrinkles and hotspots
+- Adding synthetic motion blur and DOF blur
+- Adding noise and compression artifacts
+
+We decided to generate 5 augmentations for each data point. We generated another 5k total combining random inputs together into the same image, storign gt_target and gt_all for just the foreground object and both together. During training, we will roughly 50% of the time set our hint as only targetting the target, so the model needs to learn to set the alpha of the other target to 0 since its not important here. Without this, the hint says basically nothing and the model can learn to just extract the entire subject.
+
 ---
 
 ## Core Architecture
