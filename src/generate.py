@@ -82,6 +82,14 @@ def generate_batch(
 
     for i in tqdm(range(0, len(prompts), batch_size), desc="Batches"):
         batch = prompts[i : i + batch_size]
+
+        # Skip this batch if every image already exists (resume support)
+        batch_paths = [output_dir / f"{i + j:04d}.png" for j in range(len(batch))]
+        if all(p.exists() for p in batch_paths):
+            saved.extend(batch_paths)
+            tqdm.write(f"  Skipping batch {i}-{i + len(batch) - 1} (already exists)")
+            continue
+
         images = pipeline(
             prompt=batch,
             negative_prompt=[negative_prompt] * len(batch),
