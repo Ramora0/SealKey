@@ -11,7 +11,7 @@ Over Corridorkey:
 1. Temporal consistency
 2. Any color background, blue or green
 3. Arbitrary resolution
-4. Much wider data
+4. Much more comprehensive data
 5. No licensing issues
 
 ---
@@ -26,17 +26,7 @@ Over Corridorkey:
 | Output | RGBA [B,4,H,W] — residual RGB, direct alpha |
 | RGB head | `clamp(input + delta, 0, 1)` |
 | Alpha head | `sigmoid(logits)` or `hardtanh` — not raw clamp (kills gradients) |
-| Temporal state | None — cross-frame info enters only via prev_alpha + hint inputs |
 | Normalization | ImageNet for RGB, raw [0,1] for hint and prev_alpha |
-
-**Why no recurrent hidden state:** the model is effectively single-frame per forward
-pass; all temporal coupling lives in the prev_alpha channel (and, when supplied, the
-hint channel). This keeps the architecture trivially resolution-agnostic, avoids
-BPTT, and lets training run on shuffled (frame_t-1, frame_t) pairs instead of long
-clips. We accept a temporal-quality ceiling in exchange for simplicity and
-resolution robustness; if flicker turns out to need more than prev_alpha
-propagation, revisit with window-based attention or a light ConvGRU, not global
-attention.
 
 ---
 
@@ -45,12 +35,11 @@ attention.
 Two separate single-channel inputs:
 
 - **hint** — external user-provided signal (trimap-ish scribble, box mask, SAM
-  click mask, etc.). **Always present**, on every frame including frame 0. The
-  model can rely on hint being a real signal; it is never zeroed at inference.
+  click mask, etc.). Usually present, but when absent should take the whole subject.
 - **prev_alpha** — the detached predicted alpha from t-1. **Zeros on frame 0**
   (no previous frame exists), real prediction thereafter. The model must handle
   the all-zero case gracefully — frame 0 is effectively a single-frame matte
-  guided by hint alone.
+  guided by hint alone, or sometimes nothing.
 
 - prev_alpha is the **only** temporal mechanism — there is no hidden state, so
   everything the model knows about the past is whatever fits in this one channel.
@@ -79,9 +68,9 @@ a fixed spatial size.**
 
 ### Clip length
 - No recurrent state → no BPTT. Training operates on **frame pairs**
-  `(frame_{t-1}, frame_t)` with prev_alpha supplied from the GT (or from a
+  `(frame_{t-1}, frame_t)` with prev_alpha supplied from the augmented GT or from a
   detached forward pass on frame_{t-1}, scheduled-sampling style, to close the
-  train/inference gap).
+  train/inference gap.
 - Longer sequences are only needed at eval time, to measure drift over many
   frames. Short pairs are enough to train the temporal losses below.
 
@@ -94,13 +83,6 @@ a fixed spatial size.**
 - Edge quality and temporal stability at high-res is where fully-conv models
   surprise you badly. Catch it early.
 
-### Loss
-Three loss terms:
-- BCE or L1 on alpha
-- L1 on RGB weighted by GT_alpha * (1 - GT_alpha) to only focus on edges
-- Small L1 reg on all deltas
-
-
 ---
 
 ## Loss Design
@@ -110,12 +92,12 @@ must be **scale-normalized** so they behave identically at training and inferenc
 resolutions.
 
 ### Per-frame losses
-- Alpha L1 + L2
-- Laplacian / gradient loss on alpha (edge sharpness)
-- Composited-RGB loss: `composite(pred_rgba, bg) vs composite(gt_rgba, bg)` over
-  multiple random backgrounds. This is what makes unmixing actually learn.
+Three loss terms:
+- BCE or L1 on alpha
+- L1 on RGB weighted by GT_alpha * (1 - GT_alpha) to only focus on edges
+- Small L1 reg on all deltas to encourage not changing the original image
 
-### Temporal losses
+### Future Loss Ideas (not in v1)
 - **Flow-warped alpha consistency:**
   `L1(alpha_t, warp(alpha_{t-1}, flow_{t-1→t})) * (1 - occlusion_mask)`
   Use an off-the-shelf flow model (RAFT) as a frozen teacher.
@@ -128,20 +110,6 @@ resolutions.
 Flow magnitude is in pixels. 10 px/frame at 480×832 becomes 40 px/frame at
 1920×3328. Normalize flow to frame-fraction or [-1,1] before any loss uses it, or
 inference-time temporal behavior will not match training.
-
----
-
-## Composite Convention
-
-Decide up front and document it in the dataloader, loss, and any export path:
-
-- **Premultiplied** (`rgb * alpha` is what's stored): residual `rgb + delta` is
-  modeling premultiplied color. Loss must compare premultiplied.
-- **Unpremultiplied** (full foreground color, alpha separate): residual is modeling
-  unpremultiplied. Compositing downstream applies `rgb * alpha + bg * (1 - alpha)`.
-
-Mixing these is the #1 subtle bug in matting pipelines. Pick one, assert it in the
-dataset, and write the composited-RGB loss to match.
 
 ---
 
