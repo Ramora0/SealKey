@@ -1,10 +1,22 @@
 {
-  "template": "{shot_type}. {scene}. The background of this video is transparent. Realistic style.",
+  "template": "{shot_type}{angle}. {scene}. The background of this video is transparent. Realistic style.",
 
   "shot_types": {
     "close_up": ["Close-up", "Extreme close-up"],
     "medium": ["Medium shot"],
     "wide": ["Wide shot", "Full body shot"]
+  },
+
+  "angles": {
+    "probability": 0.35,
+    "items": [
+      " from the side",
+      " from behind",
+      " at a 3/4 angle",
+      " in profile",
+      " from slightly above",
+      " from a low angle"
+    ]
   },
 
   "challenges": {
@@ -27,7 +39,16 @@
         "with fine thin hair",
         "with messy windblown hair",
         "with a big curly afro",
-        "with long wild hair"
+        "with long wild hair",
+        "with tight coily hair",
+        "with dark kinky curls",
+        "with sleek straight black hair",
+        "with thick dreadlocks",
+        "with cornrow braids",
+        "with a tight bun of coily hair",
+        "with voluminous coily hair",
+        "with shoulder-length wavy hair",
+        "with a short curly afro"
       ],
       "motions": [
         "spinning",

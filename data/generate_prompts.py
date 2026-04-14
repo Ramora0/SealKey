@@ -49,8 +49,13 @@ def generate_prompt(rng: random.Random, data: dict) -> str:
     shot_type_key = rng.choice(challenge["shot_types"])
     shot_type = rng.choice(data["shot_types"][shot_type_key])
 
+    angle = ""
+    angles = data.get("angles")
+    if angles and rng.random() < angles["probability"]:
+        angle = rng.choice(angles["items"])
+
     scene = build_scene(rng, challenge)
-    return data["template"].format(shot_type=shot_type, scene=scene)
+    return data["template"].format(shot_type=shot_type, angle=angle, scene=scene)
 
 
 def main():
