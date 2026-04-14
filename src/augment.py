@@ -282,7 +282,12 @@ def _ffmpeg_codec_encode(in_dir: Path, out_path: Path, fps: int,
     else:
         enc += ["-q:v", str(level)]
     enc += [str(out_path)]
-    subprocess.run(enc, check=True, capture_output=True)
+    r = subprocess.run(enc, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg encode failed ({codec['encoder']} @ {codec['mode']}={level}) "
+            f"exit={r.returncode}\n--- stderr ---\n{r.stderr.decode(errors='replace')}"
+        )
 
 
 # ---------------------------------------------------------------------------
