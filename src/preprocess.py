@@ -299,20 +299,28 @@ def _compose_double(target_paths: list[Path],
         comp = comp * (1.0 - t_a) + t_rgb.astype(np.float32) * t_a
         comp_u8 = np.clip(comp, 0, 255).astype(np.uint8)
 
-        # gt_all: target ∪ visible-distractor on transparent bg.
-        # distractor_alpha masked by target (disjoint from target_alpha).
-        d_a_visible = np.clip(
-            d_a_u8.astype(np.float32) * (1.0 - t_a[..., 0]), 0, 255,
+        # gt_all: target "over" visible-distractor on a transparent bg, via
+        # proper Porter-Duff alpha compositing (premultiplied math, stored
+        # unpremultiplied to match the rest of the pipeline).
+        #
+        # premul RGB   = t_rgb*t_a + d_rgb*(d_a*(1-t_a))
+        # alpha_all    = t_a + d_a*(1-t_a)
+        # unpremul RGB = premul RGB / alpha_all  (guarded at alpha=0)
+        #
+        # Doing this properly matters at target semi-transparent edges: the
+        # naive "pick target if t_a>0" rule over-weights target and produces a
+        # gt_all that can't match the degraded input under a compositing loss.
+        d_a_vis = d_a * (1.0 - t_a)                              # (H,W,1) [0,1]
+        rgb_premul = (t_rgb.astype(np.float32) * t_a
+                      + d_rgb.astype(np.float32) * d_a_vis)      # (H,W,3)
+        alpha_all_f = t_a + d_a_vis                              # (H,W,1) [0,1]
+        eps = 1e-6
+        rgb_all = np.where(
+            alpha_all_f > eps,
+            np.clip(rgb_premul / np.maximum(alpha_all_f, eps), 0, 255),
+            0,
         ).astype(np.uint8)
-        # RGB: target wherever target is present, distractor elsewhere.
-        # (In regions where both alpha are 0, the RGB value is undefined but
-        # multiplied by alpha=0 in any compositing loss, so it doesn't matter.)
-        use_target = (t_a_u8 > 0)[..., None]
-        rgb_all = np.where(use_target, t_rgb, d_rgb)
-        # Disjoint by construction, so union = sum (safely clipped).
-        alpha_all = np.clip(
-            t_a_u8.astype(np.int32) + d_a_visible.astype(np.int32), 0, 255,
-        ).astype(np.uint8)
+        alpha_all = np.clip(alpha_all_f[..., 0] * 255.0, 0, 255).astype(np.uint8)
 
         name = f"{i:06d}.png"
         cv2.imwrite(str(out_comp_dir / name), comp_u8)
