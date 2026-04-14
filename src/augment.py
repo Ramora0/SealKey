@@ -74,6 +74,20 @@ def _available_codecs() -> list[dict]:
 CODECS = _available_codecs()
 
 
+def _gt_rgb_encoder_available() -> bool:
+    """Probe ffmpeg for libx264 — our preferred GT RGB encoder. If absent (as
+    on many HPC ffmpeg builds), fall back to lossless FFV1 yuv444p."""
+    try:
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                           capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+    return " libx264 " in r.stdout.decode(errors="replace")
+
+
+GT_RGB_USES_LIBX264 = _gt_rgb_encoder_available()
+
+
 # ---------------------------------------------------------------------------
 # Smooth trajectory (used by geometric stage + preprocess subject motion)
 # ---------------------------------------------------------------------------
@@ -325,18 +339,36 @@ def _ffmpeg_lossless_encode(in_dir: Path, out_path: Path, fps: int,
 
 def _ffmpeg_gt_rgb_encode(in_dir: Path, out_path: Path, fps: int,
                           threads: int = 0) -> None:
-    """Encode a 3-channel PNG sequence with libx264 yuv444p CRF 12 — visually
-    lossless at 4:4:4 chroma. Much smaller than FFV1 for GT RGB."""
+    """Encode a 3-channel PNG sequence for GT RGB storage.
+
+    Prefers libx264 yuv444p CRF 12 (visually lossless, ~10-20x smaller than
+    FFV1). Falls back to FFV1 yuv444p (truly lossless) when libx264 isn't in
+    this ffmpeg build — common on HPC ffmpeg built with --disable-libx264.
+    The fallback writes to the same .mp4 path so downstream code doesn't
+    need to branch.
+    """
     enc = [
         "ffmpeg", "-y",
         "-framerate", str(fps),
         "-i", str(in_dir / "%06d.png"),
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-        "-c:v", GT_RGB_CODEC["encoder"],
-        "-pix_fmt", GT_RGB_CODEC["pix_fmt"],
-        "-crf", str(GT_RGB_CODEC["crf"]),
-        "-preset", "medium",
     ]
+    if GT_RGB_USES_LIBX264:
+        enc += [
+            "-c:v", GT_RGB_CODEC["encoder"],
+            "-pix_fmt", GT_RGB_CODEC["pix_fmt"],
+            "-crf", str(GT_RGB_CODEC["crf"]),
+            "-preset", "medium",
+        ]
+    else:
+        # FFV1 is in a Matroska container normally; .mp4 can't hold FFV1, so
+        # force-write as matroska regardless of the .mp4 extension.
+        enc += [
+            "-c:v", "ffv1",
+            "-pix_fmt", "yuv444p",
+            "-level", "3",
+            "-f", "matroska",
+        ]
     if threads > 0:
         enc += ["-threads", str(threads)]
     enc += [str(out_path)]
