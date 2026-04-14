@@ -50,6 +50,7 @@ from src.hint_generators import (
     zero_hint,
 )
 from src.preprocess import (
+    DEFAULT_INPUT,
     _find_clip_dirs,
     _unzip_if_needed,
     preprocess_double,
@@ -60,7 +61,7 @@ from src.preprocess import (
 HINT_CHOICES = ["trimap", "box", "chroma", "chroma_gated", "zero", "random"]
 HINT_KINDS = ["trimap", "box", "chroma", "chroma_gated", "zero"]
 
-DEFAULT_SCRATCH = Path("/fs/scratch/PAS2836/lees_stuff/sealkey_wan_alpha")
+DEFAULT_SCRATCH = DEFAULT_INPUT
 DEFAULT_OUTPUT = Path("./preview_out")
 
 

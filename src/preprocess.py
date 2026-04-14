@@ -71,6 +71,12 @@ from src.augment import augment_multi, _smooth_trajectory
 from src.green_screen import generate_green_screen
 
 
+# Default scratch locations. preview_augment reuses DEFAULT_INPUT so both tools
+# pull from the same raw-clip pool without duplicated constants.
+DEFAULT_INPUT = Path("/fs/scratch/PAS2836/lees_stuff/sealkey_wan_alpha")
+DEFAULT_OUTPUT = Path("/fs/scratch/PAS2836/lees_stuff/sealkey_preprocessed")
+
+
 # ---------------------------------------------------------------------------
 # Subject-only geometric trajectory (runs BEFORE compositing).
 # BORDER_CONSTANT=0 on both RGB and alpha: newly-exposed margin has alpha=0,
@@ -626,6 +632,20 @@ def _main_doubles(args) -> None:
     print(f"\nDone — {args.count} doubles written under {args.output}/")
 
 
+def _main_all(args) -> None:
+    """Run solos then doubles into <output>/solos and <output>/doubles.
+
+    Shares --input, --count, --fps, --seed, --workers, --threads across both.
+    Each sub-run is independently resumable (same idempotency check as a
+    standalone invocation), so re-running picks up wherever it left off.
+    """
+    base_output = args.output
+    for sub_mode, runner in (("solos", _main_solos), ("doubles", _main_doubles)):
+        print(f"\n==================== {sub_mode} ====================")
+        args.output = base_output / sub_mode
+        runner(args)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="SealKey preprocessing: composite subjects on green screen "
@@ -635,17 +655,28 @@ def main():
     )
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    for name in ("solos", "doubles"):
-        sp = sub.add_parser(name)
-        sp.add_argument("--input", type=Path, nargs="+", required=True,
+    for name in ("solos", "doubles", "all"):
+        sp = sub.add_parser(
+            name,
+            help={
+                "solos": "Single-subject clips.",
+                "doubles": "Two-subject (target + distractor) clips.",
+                "all": "Run both solos and doubles into <output>/{solos,doubles}.",
+            }[name],
+        )
+        sp.add_argument("--input", type=Path, nargs="+", default=[DEFAULT_INPUT],
                         help="One or more input paths. Each may be: a clip "
                              "directory of RGBA PNG frames, a directory of "
                              "such clip directories, or a directory "
                              "containing .zip files that each extract to a "
                              "clip. Zips are unpacked in-place (skipped if "
-                             "already unpacked).")
-        sp.add_argument("--output", type=Path, required=True,
-                        help="Output root. Existing completed clips are skipped.")
+                             "already unpacked). "
+                             f"Default: {DEFAULT_INPUT}")
+        sp.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
+                        help="Output root. Existing completed clips are "
+                             "skipped. For `all`, solos and doubles are "
+                             "written to subdirs of this path. "
+                             f"Default: {DEFAULT_OUTPUT}")
         sp.add_argument("--fps", type=int, default=24)
         sp.add_argument("--seed", type=int, default=None)
         sp.add_argument("--workers", type=int, default=None,
@@ -658,13 +689,16 @@ def main():
         sp.add_argument("--count", type=int, default=5000,
                         help="Number of samples to generate. Clips are sampled "
                              "with replacement if count > pool size; each "
-                             "sample gets an independent augmentation roll.")
+                             "sample gets an independent augmentation roll. "
+                             "For `all`, applies to both solos and doubles.")
 
     args = parser.parse_args()
     if args.mode == "solos":
         _main_solos(args)
     elif args.mode == "doubles":
         _main_doubles(args)
+    elif args.mode == "all":
+        _main_all(args)
 
 
 if __name__ == "__main__":
