@@ -48,12 +48,37 @@ import numpy as np
 # Codec pool
 # ---------------------------------------------------------------------------
 
-CODECS = [
+_ALL_CODECS = [
     {"name": "h264",  "encoder": "libx264",     "mode": "crf",    "range": (28, 42), "container": "mp4"},
     {"name": "h265",  "encoder": "libx265",     "mode": "crf",    "range": (32, 46), "container": "mp4"},
     {"name": "mpeg2", "encoder": "mpeg2video",  "mode": "qscale", "range": (10, 25), "container": "mpg"},
     {"name": "vp9",   "encoder": "libvpx-vp9",  "mode": "crf",    "range": (40, 55), "container": "webm"},
 ]
+
+
+def _available_codecs() -> list[dict]:
+    """Filter _ALL_CODECS to encoders the local ffmpeg actually supports.
+
+    HPC ffmpeg builds often ship without libx264 / libx265 / libvpx, so we
+    probe once and keep whatever's left. If nothing is available we raise —
+    a codec-less preprocess pass would silently skip the codec stage.
+    """
+    try:
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                           capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"Could not probe ffmpeg encoders: {e}")
+    listing = r.stdout.decode(errors="replace")
+    available = [c for c in _ALL_CODECS if f" {c['encoder']} " in listing]
+    if not available:
+        raise RuntimeError(
+            "None of the expected encoders are available in this ffmpeg build: "
+            f"{[c['encoder'] for c in _ALL_CODECS]}"
+        )
+    return available
+
+
+CODECS = _available_codecs()
 
 
 # ---------------------------------------------------------------------------
