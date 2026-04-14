@@ -229,7 +229,7 @@ def _stage_per_frame_multi(
     dof_thickness = int(rng.integers(6, 20))
 
     do_noise = bool(rng.random() < 0.6)
-    noise_sigma = float(rng.uniform(3.0, 15.0))
+    noise_sigma = float(rng.uniform(1.5, 7.5))
 
     do_banding = bool(rng.random() < 0.15)
     banding_bits = int(rng.integers(6, 8))
