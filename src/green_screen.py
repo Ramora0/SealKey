@@ -55,8 +55,14 @@ def _fbm(shape: tuple[int, int], octaves: int = 4, seed: int | None = None) -> n
 # ---------------------------------------------------------------------------
 
 def _random_base_green(rng: np.random.Generator) -> tuple[int, int, int]:
-    """Return a random (H, S, V) base green in OpenCV ranges (H:0-179, S/V:0-255)."""
-    h = rng.integers(35, 80)          # hue range covering greens
+    """Return a random (H, S, V) base chroma key color in OpenCV ranges
+    (H:0-179, S/V:0-255). Covers both green and blue screens, skipping the
+    cyan middle which is not used in real chroma keying."""
+    # Bimodal: ~70% green screens, ~30% blue screens
+    if rng.random() < 0.7:
+        h = rng.integers(40, 80)      # green — slightly less yellow on low end
+    else:
+        h = rng.integers(100, 125)    # blue — chroma blue range
     s = rng.integers(150, 255)        # fairly saturated
     v = rng.integers(130, 240)        # medium to bright
     return int(h), int(s), int(v)
@@ -119,26 +125,65 @@ def _apply_uneven_lighting(img: np.ndarray, rng: np.random.Generator) -> np.ndar
 
 
 def _apply_wrinkles(img: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Fabric folds — dark valleys, bright ridges via directional noise."""
+    """Fabric folds — strongly anisotropic noise rotated to a random angle.
+
+    Real wrinkles run along one direction: high frequency across the folds,
+    low frequency along them. Creases (dark valleys) are emphasized more
+    than ridges (bright highlights) to match how fabric catches light.
+    """
     h, w = img.shape[:2]
-    # Stretch noise in one direction for fold-like appearance
-    angle = rng.uniform(0, math.pi)
-    scale_x = rng.uniform(20, 80)
-    scale_y = rng.uniform(100, 400)
+    # Work on an oversized canvas so rotation doesn't reveal corners
+    pad = int(max(h, w) * 0.6)
+    H, W = h + 2 * pad, w + 2 * pad
 
-    noise = _perlin_grid((h, w), scale=scale_x, seed=rng.integers(0, 2**31))
-    # Add a second layer at different angle
-    noise2 = _perlin_grid((h, w), scale=scale_y, seed=rng.integers(0, 2**31))
-    wrinkle = 0.7 * noise + 0.3 * noise2
+    # Anisotropy ratio — how many times more frequent across vs. along folds
+    anisotropy = rng.uniform(5, 20)
 
+    # Along-fold scale (big = low frequency along the fold line)
+    along_scale = rng.uniform(150, 400)
+    # Across-fold scale (small = many wrinkles packed together)
+    across_scale = along_scale / anisotropy
+    across_scale = max(across_scale, 2.5)
+
+    # Build a tall, narrow random grid then resize non-uniformly.
+    # across: x-axis (high freq), along: y-axis (low freq)
+    gx = max(2, int(W / across_scale))
+    gy = max(2, int(H / along_scale))
+    grid = rng.standard_normal((gy, gx)).astype(np.float32)
+    aniso = cv2.resize(grid, (W, H), interpolation=cv2.INTER_CUBIC)
+
+    # Add a lower-amplitude secondary wrinkle layer at a different frequency
+    gx2 = max(2, int(W / (across_scale * rng.uniform(0.4, 0.8))))
+    gy2 = max(2, int(H / (along_scale * rng.uniform(0.8, 1.5))))
+    grid2 = rng.standard_normal((gy2, gx2)).astype(np.float32)
+    aniso2 = cv2.resize(grid2, (W, H), interpolation=cv2.INTER_CUBIC)
+    wrinkle = 0.75 * aniso + 0.25 * aniso2
+
+    # Rotate by a random angle
+    angle_deg = rng.uniform(0, 360)
+    M = cv2.getRotationMatrix2D((W / 2, H / 2), angle_deg, 1.0)
+    wrinkle = cv2.warpAffine(
+        wrinkle, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+    )
+
+    # Crop back to image size
+    wrinkle = wrinkle[pad : pad + h, pad : pad + w]
+
+    # Normalize to [0, 1]
     lo, hi = wrinkle.min(), wrinkle.max()
     if hi - lo > 1e-6:
         wrinkle = (wrinkle - lo) / (hi - lo)
 
-    strength = rng.uniform(10, 45)
-    img[:, :, 2] += (wrinkle - 0.5) * strength
-    # Slight saturation change in fold valleys
-    img[:, :, 1] += (wrinkle - 0.5) * strength * 0.3
+    # Center around 0 then bias darker — creases should be deeper than ridges.
+    signed = wrinkle - 0.5
+    # Asymmetric curve: valleys (negative) get pushed harder than ridges
+    valley_boost = rng.uniform(1.4, 2.2)
+    signed = np.where(signed < 0, signed * valley_boost, signed)
+
+    strength = rng.uniform(25, 65)
+    img[:, :, 2] += signed * strength
+    # Valleys also slightly desaturate (shadow look)
+    img[:, :, 1] += signed * strength * 0.25
     return img
 
 
@@ -280,10 +325,56 @@ def _apply_screen_edge(img: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     if not edges:
         edges.append("bottom")
 
-    # Neutral wall/floor color in HSV
-    wall_h = rng.integers(10, 25)   # brownish/grayish
-    wall_s = rng.integers(10, 60)
-    wall_v = rng.integers(60, 140)
+    # Sample from a variety of realistic studio surrounds
+    wall_kind = rng.choice(
+        [
+            "white_wall",     # painted white/off-white walls
+            "cream",          # beige/cream walls
+            "wood_floor",     # warm wood tones
+            "concrete",       # gray concrete floor
+            "black_curtain",  # black drape/curtain
+            "brick",          # red-brown brick
+            "painted_warm",   # warm-tinted painted wall
+            "painted_cool",   # cool-tinted painted wall
+            "dark_wood",      # dark wood paneling
+        ]
+    )
+    if wall_kind == "white_wall":
+        wall_h = rng.integers(15, 35)
+        wall_s = rng.integers(5, 25)
+        wall_v = rng.integers(200, 245)
+    elif wall_kind == "cream":
+        wall_h = rng.integers(18, 30)
+        wall_s = rng.integers(30, 70)
+        wall_v = rng.integers(170, 220)
+    elif wall_kind == "wood_floor":
+        wall_h = rng.integers(8, 20)
+        wall_s = rng.integers(80, 160)
+        wall_v = rng.integers(80, 160)
+    elif wall_kind == "concrete":
+        wall_h = rng.integers(0, 30)
+        wall_s = rng.integers(0, 20)
+        wall_v = rng.integers(90, 170)
+    elif wall_kind == "black_curtain":
+        wall_h = rng.integers(0, 179)
+        wall_s = rng.integers(0, 30)
+        wall_v = rng.integers(10, 50)
+    elif wall_kind == "brick":
+        wall_h = rng.integers(0, 12)
+        wall_s = rng.integers(80, 160)
+        wall_v = rng.integers(80, 150)
+    elif wall_kind == "painted_warm":
+        wall_h = rng.integers(0, 25)
+        wall_s = rng.integers(40, 140)
+        wall_v = rng.integers(100, 200)
+    elif wall_kind == "painted_cool":
+        wall_h = rng.integers(100, 135)
+        wall_s = rng.integers(30, 120)
+        wall_v = rng.integers(100, 200)
+    else:  # dark_wood
+        wall_h = rng.integers(8, 18)
+        wall_s = rng.integers(100, 180)
+        wall_v = rng.integers(40, 90)
 
     for edge in edges:
         depth = rng.uniform(0.03, 0.15)

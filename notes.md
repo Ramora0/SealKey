@@ -11,7 +11,8 @@ Over Corridorkey:
 1. Temporal consistency
 2. Any color background, blue or green
 3. Arbitrary resolution
-4. Trained on a wide variety of poses
+4. Much wider data
+5. No licensing issues
 
 ---
 
@@ -25,31 +26,39 @@ Over Corridorkey:
 | Output | RGBA [B,4,H,W] — residual RGB, direct alpha |
 | RGB head | `clamp(input + delta, 0, 1)` |
 | Alpha head | `sigmoid(logits)` or `hardtanh` — not raw clamp (kills gradients) |
-| Temporal state | ConvGRU cells at decoder scales 1/16, 1/8, 1/4 |
-| Hidden dims | 32–64 ch per GRU (RVM showed this is enough) |
+| Temporal state | None — cross-frame info enters only via prev_alpha + hint inputs |
 | Normalization | ImageNet for RGB, raw [0,1] for hint and prev_alpha |
 
-**Why recurrence, not memory attention:** ConvGRU scales linearly with pixel count.
-Cross-attention over spatial tokens scales quadratically — cheap at 480×832
-(~1.5k tokens at 1/16), brutal at 2K+ (~30k tokens). Designing around attention now
-means ripping it out later. Accept a small quality ceiling in exchange for
-resolution robustness.
+**Why no recurrent hidden state:** the model is effectively single-frame per forward
+pass; all temporal coupling lives in the prev_alpha channel (and, when supplied, the
+hint channel). This keeps the architecture trivially resolution-agnostic, avoids
+BPTT, and lets training run on shuffled (frame_t-1, frame_t) pairs instead of long
+clips. We accept a temporal-quality ceiling in exchange for simplicity and
+resolution robustness; if flicker turns out to need more than prev_alpha
+propagation, revisit with window-based attention or a light ConvGRU, not global
+attention.
 
 ---
 
 ## Hint & Prev-Alpha Channels
 
-Hint is user-provided on frame 0 only. For t>0, feed the **detached, predicted
-alpha from t-1** as the "hint" channel (or as a separate prev_alpha channel — cleaner
-to keep both, with hint zeroed after frame 0).
+Two separate single-channel inputs:
 
-- This is the highest-leverage temporal mechanism. Most perceived "temporal
-  intelligence" comes from prev_alpha propagation, not from the GRU state.
+- **hint** — external user-provided signal (trimap-ish scribble, box mask, SAM
+  click mask, etc.). **Always present**, on every frame including frame 0. The
+  model can rely on hint being a real signal; it is never zeroed at inference.
+- **prev_alpha** — the detached predicted alpha from t-1. **Zeros on frame 0**
+  (no previous frame exists), real prediction thereafter. The model must handle
+  the all-zero case gracefully — frame 0 is effectively a single-frame matte
+  guided by hint alone.
+
+- prev_alpha is the **only** temporal mechanism — there is no hidden state, so
+  everything the model knows about the past is whatever fits in this one channel.
 - Optional upgrade: flow-warp prev_alpha before feeding it in, using a light flow
   net or RAFT-small. Skip on v1.
-- The 4th input channel (hint) and 5th (prev_alpha) are randomly initialized in the
-  first conv — not free pretrained signal. Fine, but don't expect ImageNet transfer
-  on those slices.
+- The 4th input channel (hint) and 5th (prev_alpha) are randomly initialized in
+  the first conv — not free pretrained signal. Fine, but don't expect ImageNet
+  transfer on those slices.
 
 ---
 
@@ -60,7 +69,6 @@ a fixed spatial size.**
 
 - No learned positional embeddings.
 - No fixed-size pooling heads (no global avg pool feeding an MLP, etc.).
-- ConvGRU hidden state shape = feature map shape → auto-scales. Keep it that way.
 - If attention is ever added, it must be window-based (Swin) or neighborhood
   attention. No global attention.
 - ConvNeXt is fully convolutional out of the box. Don't break that.
@@ -69,17 +77,17 @@ a fixed spatial size.**
 
 ## Training Setup
 
-### Clip length and BPTT
-- 8–16 frame clips at 480×832 fit comfortably.
-- Truncated BPTT: detach hidden state every 4–8 frames during training to bound
-  memory.
-- Longer clips matter — temporal losses need enough frames to see drift.
+### Clip length
+- No recurrent state → no BPTT. Training operates on **frame pairs**
+  `(frame_{t-1}, frame_t)` with prev_alpha supplied from the GT (or from a
+  detached forward pass on frame_{t-1}, scheduled-sampling style, to close the
+  train/inference gap).
+- Longer sequences are only needed at eval time, to measure drift over many
+  frames. Short pairs are enough to train the temporal losses below.
 
 ### Multi-scale training
 - Random scale augmentation within 0.75×–1.5× of 480×832.
 - This is the primary defense against receptive-field mismatch at inference scale.
-- Without it, ConvGRU hidden states trained at a single scale tend to under-smooth
-  at high-res because the temporal receptive field in world-space shrinks.
 
 ### Validation
 - Hold out a few **high-res** clips. Run them periodically during training.
@@ -134,9 +142,10 @@ dataset, and write the composited-RGB loss to match.
 
 - Memory-attention banks (XMem/SAM2 style). Revisit only if occlusion / re-ID
   becomes a real failure mode, and only with window-based attention.
-- 3D or (2+1)D convolutions. ConvGRU subsumes the useful part at lower cost.
+- 3D or (2+1)D convolutions. prev_alpha feedback covers the useful part at lower
+  cost; revisit only if temporal quality plateaus.
+- ConvGRU / recurrent hidden state. Removed — see Core Architecture rationale.
 - Learned flow. Use a frozen off-the-shelf flow model for losses; don't co-train.
-- Multi-hint UX (hints on later frames). prev_alpha feedback covers the common case.
 
 ---
 
@@ -147,5 +156,5 @@ dataset, and write the composited-RGB loss to match.
 - Occlusion handling: minimal — that's what memory-attention solves, and we're
   explicitly not building that.
 - Per-frame alpha quality on static frames: roughly neutral. Temporal model should
-  not regress the single-frame baseline; if it does, the GRU is overfitting to
-  training clip statistics.
+  not regress the single-frame baseline; if it does, the prev_alpha channel is
+  being over-trusted and dragging the per-frame prediction toward a stale mask.

@@ -1,0 +1,2 @@
+[console_scripts]
+generate = src.generate:main

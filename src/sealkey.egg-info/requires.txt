@@ -1,0 +1,11 @@
+torch>=2.1
+diffusers>=0.25
+transformers
+accelerate
+safetensors
+huggingface-hub
+einops
+opencv-python
+tqdm
+peft
+gradio>=4.0

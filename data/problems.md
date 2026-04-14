@@ -1,0 +1,1 @@
+Blonde hair has green screen artifacts
