@@ -224,11 +224,24 @@ def _stage_per_frame_multi(
     clean-GT L1 loss would penalize the model for keeping noise the input
     actually contains.
     """
-    do_dof = bool(rng.random() < 0.4)
-    dof_sigma = float(rng.uniform(1.5, 4.0))
-    dof_thickness = int(rng.integers(6, 20))
+    # Two DoF modes:
+    #   rack_focus  — sharp subject, blurry halo at alpha edges. Normal cine.
+    #   out_of_focus — whole subject crushingly blurred (sigma 12-28). Rare,
+    #                  so the model sees extreme-defocus examples but isn't
+    #                  flooded with them.
+    do_out_of_focus = bool(rng.random() < 0.05)
+    if do_out_of_focus:
+        do_dof = True
+        dof_mode = "out_of_focus"
+        dof_sigma = float(rng.uniform(12.0, 28.0))
+        dof_thickness = 0  # 0 = apply blur uniformly, no edge band
+    else:
+        do_dof = bool(rng.random() < 0.4)
+        dof_mode = "rack_focus"
+        dof_sigma = float(rng.uniform(1.5, 4.0))
+        dof_thickness = int(rng.integers(6, 20))
 
-    do_noise = bool(rng.random() < 0.6)
+    do_noise = bool(rng.random() < 0.5)
     noise_sigma = float(rng.uniform(1.5, 7.5))
 
     do_banding = bool(rng.random() < 0.15)
@@ -243,29 +256,36 @@ def _stage_per_frame_multi(
         alphas = [cv2.imread(str(paths[i]), cv2.IMREAD_GRAYSCALE) for paths in alpha_paths_list]
 
         if do_dof:
-            # Union of all alphas guides the RGB DoF blur; each alpha uses its
-            # own edges.
-            if alphas:
-                union = np.maximum.reduce(alphas)
+            if dof_thickness == 0:
+                # out_of_focus: replace with the full blur, no edge weighting.
+                rgbs = [cv2.GaussianBlur(rgb, (0, 0), sigmaX=dof_sigma)
+                        for rgb in rgbs]
+                alphas = [cv2.GaussianBlur(a, (0, 0), sigmaX=dof_sigma)
+                          for a in alphas]
             else:
-                union = np.zeros(rgbs[0].shape[:2], dtype=np.uint8)
-            union_band = _alpha_edge_mask(union, dof_thickness)
-            m = union_band[..., None]
-            new_rgbs = []
-            for rgb in rgbs:
-                br = cv2.GaussianBlur(rgb, (0, 0), sigmaX=dof_sigma)
-                new_rgbs.append(
-                    (rgb.astype(np.float32) * (1 - m) + br.astype(np.float32) * m).astype(np.uint8)
-                )
-            rgbs = new_rgbs
+                # rack_focus: blur only at alpha edges. Subject stays sharp,
+                # halo softens.
+                if alphas:
+                    union = np.maximum.reduce(alphas)
+                else:
+                    union = np.zeros(rgbs[0].shape[:2], dtype=np.uint8)
+                union_band = _alpha_edge_mask(union, dof_thickness)
+                m = union_band[..., None]
+                new_rgbs = []
+                for rgb in rgbs:
+                    br = cv2.GaussianBlur(rgb, (0, 0), sigmaX=dof_sigma)
+                    new_rgbs.append(
+                        (rgb.astype(np.float32) * (1 - m) + br.astype(np.float32) * m).astype(np.uint8)
+                    )
+                rgbs = new_rgbs
 
-            new_alphas = []
-            for a in alphas:
-                band = _alpha_edge_mask(a, dof_thickness)
-                ba = cv2.GaussianBlur(a, (0, 0), sigmaX=dof_sigma)
-                a = (a.astype(np.float32) * (1 - band) + ba.astype(np.float32) * band).astype(np.uint8)
-                new_alphas.append(a)
-            alphas = new_alphas
+                new_alphas = []
+                for a in alphas:
+                    band = _alpha_edge_mask(a, dof_thickness)
+                    ba = cv2.GaussianBlur(a, (0, 0), sigmaX=dof_sigma)
+                    a = (a.astype(np.float32) * (1 - band) + ba.astype(np.float32) * band).astype(np.uint8)
+                    new_alphas.append(a)
+                alphas = new_alphas
 
         if do_noise and rgbs:
             # One noise sample per frame, shared across all RGB streams so
@@ -287,7 +307,8 @@ def _stage_per_frame_multi(
             cv2.imwrite(str(out / paths[i].name), a)
 
     return {
-        "dof": {"on": do_dof, "sigma": dof_sigma, "thickness": dof_thickness},
+        "dof": {"on": do_dof, "mode": dof_mode, "sigma": dof_sigma,
+                "thickness": dof_thickness},
         "noise": {"on": do_noise, "sigma": noise_sigma,
                   "note": "shared sample across all RGB streams"},
         "banding": {"on": do_banding, "bits": banding_bits,
@@ -517,7 +538,7 @@ def augment_multi(
             settings["geometric"] = {"on": False}
 
         # Stage 2: motion blur (physical — applied to all streams)
-        do_blur = "motion_blur" not in skip and rng.random() < 0.7
+        do_blur = "motion_blur" not in skip and rng.random() < 0.5
         if do_blur:
             factor = int(rng.integers(3, 6))
             n_mix = factor
