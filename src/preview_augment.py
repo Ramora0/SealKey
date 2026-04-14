@@ -119,18 +119,42 @@ def _stack_side_by_side(input_rgb: np.ndarray, alpha: np.ndarray,
     return np.hstack(panels)
 
 
-def _stitch_mp4(frames_dir: Path, out_path: Path, fps: int) -> None:
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-framerate", str(fps),
-            "-i", str(frames_dir / "%06d.png"),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-            str(out_path),
-        ],
-        check=True, capture_output=True,
+def _stitch_preview(frames_dir: Path, out_dir: Path, fps: int) -> Path:
+    """Stitch frames/%06d.png into a playable video using a locally-available
+    encoder. Returns the written path (extension depends on encoder)."""
+    from src.augment import CODECS  # probed at import time
+
+    # Prefer a high-quality encoder for preview; mpeg2video is the HPC fallback.
+    preference = ["libx264", "libx265", "libvpx-vp9", "mpeg2video"]
+    codec = next(
+        (c for enc in preference for c in CODECS if c["encoder"] == enc),
+        CODECS[0],
     )
+    out_path = out_dir / f"preview.{codec['container']}"
+
+    enc = [
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-i", str(frames_dir / "%06d.png"),
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", codec["encoder"],
+        "-pix_fmt", "yuv420p",
+    ]
+    if codec["mode"] == "crf":
+        enc += ["-crf", "18"]
+        if codec["encoder"] == "libvpx-vp9":
+            enc += ["-b:v", "0"]
+    else:
+        enc += ["-q:v", "3"]
+    enc += [str(out_path)]
+
+    r = subprocess.run(enc, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"preview stitch failed ({codec['encoder']}) exit={r.returncode}\n"
+            f"--- stderr ---\n{r.stderr.decode(errors='replace')}"
+        )
+    return out_path
 
 
 def main() -> None:
@@ -205,9 +229,8 @@ def main() -> None:
 
     print(f"[hint] kinds used: {sorted(kinds_used)}")
 
-    # 4. Stitch preview.mp4.
-    preview_path = args.output / "preview.mp4"
-    _stitch_mp4(frames_dir, preview_path, args.fps)
+    # 4. Stitch preview video (extension depends on what ffmpeg supports).
+    preview_path = _stitch_preview(frames_dir, args.output, args.fps)
     print(f"[preview] wrote {preview_path}")
 
 
