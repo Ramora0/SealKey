@@ -35,10 +35,35 @@ from src.hint_generators import (
     trimap_hint,
     zero_hint,
 )
-from src.preprocess import preprocess_solo
+from src.preprocess import _find_clip_dirs, _unzip_if_needed, preprocess_solo
 
 
 HINT_CHOICES = ["trimap", "box", "chroma", "chroma_gated", "zero", "random"]
+
+DEFAULT_SCRATCH = Path("/fs/scratch/PAS2836/lees_stuff/sealkey_wan_alpha")
+DEFAULT_OUTPUT = Path("./preview_out")
+
+
+def _pick_random_clip(scratch: Path, rng: random.Random) -> Path:
+    """Pick a random .zip under `scratch`, unpack if needed, return a clip dir."""
+    if not scratch.exists():
+        raise SystemExit(f"Scratch dir not found: {scratch}")
+    zips = sorted(scratch.rglob("*.zip"))
+    if not zips:
+        # Fall back to any clip dir already present under scratch.
+        clips = _find_clip_dirs(scratch)
+        if not clips:
+            raise SystemExit(f"No .zip files or clip dirs under {scratch}")
+        chosen = rng.choice(clips)
+        print(f"[input] no zips — picked existing clip dir {chosen}")
+        return chosen
+    zip_path = rng.choice(zips)
+    print(f"[input] picked zip {zip_path.name}")
+    extracted = _unzip_if_needed(zip_path)
+    clips = _find_clip_dirs(extracted)
+    if not clips:
+        raise SystemExit(f"Zip {zip_path} unpacked to {extracted} but contains no PNG clip dir")
+    return clips[0]
 
 
 def _decode_video(video_path: Path, out_dir: Path) -> list[Path]:
@@ -110,10 +135,13 @@ def _stitch_mp4(frames_dir: Path, out_path: Path, fps: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--input", type=Path, required=True,
-                        help="RGBA PNG clip directory (one subject).")
-    parser.add_argument("--output", type=Path, required=True,
-                        help="Output directory for the preview artifacts.")
+    parser.add_argument("--input", type=Path, default=None,
+                        help="RGBA PNG clip directory (one subject). "
+                             f"Default: pick a random .zip from {DEFAULT_SCRATCH}.")
+    parser.add_argument("--scratch", type=Path, default=DEFAULT_SCRATCH,
+                        help="Scratch dir to sample zips from when --input is omitted.")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
+                        help=f"Output directory for preview artifacts (default: {DEFAULT_OUTPUT}).")
     parser.add_argument("--hint", choices=HINT_CHOICES, default="random",
                         help="Hint generator to visualize.")
     parser.add_argument("--fps", type=int, default=24)
@@ -124,6 +152,10 @@ def main() -> None:
 
     seed = args.seed if args.seed is not None else random.randint(0, 2**31)
     rng = np.random.default_rng(seed)
+    py_rng = random.Random(seed)
+
+    clip_in = args.input if args.input is not None else _pick_random_clip(args.scratch, py_rng)
+    print(f"[input] clip dir: {clip_in}")
 
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -131,7 +163,7 @@ def main() -> None:
     if not args.keep_existing:
         for old in list(args.output.glob("input.*")) + list(args.output.glob("alpha.*")):
             old.unlink()
-    preprocess_solo(args.input, args.output, seed=seed, fps=args.fps)
+    preprocess_solo(clip_in, args.output, seed=seed, fps=args.fps)
 
     input_videos = list(args.output.glob("input.*"))
     alpha_videos = list(args.output.glob("alpha.*"))
