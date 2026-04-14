@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import shutil
 import subprocess
@@ -107,14 +108,16 @@ def _label_frame(img: np.ndarray, text: str) -> np.ndarray:
     return out
 
 
-def _stack_side_by_side(input_rgb: np.ndarray, alpha: np.ndarray,
-                        hint: np.ndarray, hint_label: str) -> np.ndarray:
-    alpha_rgb = cv2.cvtColor(alpha, cv2.COLOR_GRAY2BGR)
+def _stack_side_by_side(input_rgb: np.ndarray, gt_rgb: np.ndarray,
+                        gt_alpha: np.ndarray, hint: np.ndarray,
+                        hint_label: str) -> np.ndarray:
+    alpha_rgb = cv2.cvtColor(gt_alpha, cv2.COLOR_GRAY2BGR)
     hint_rgb = cv2.cvtColor(hint, cv2.COLOR_GRAY2BGR)
     panels = [
-        _label_frame(input_rgb,  "input (degraded RGB)"),
-        _label_frame(alpha_rgb,  "alpha (GT, co-degraded)"),
-        _label_frame(hint_rgb,   f"hint ({hint_label})"),
+        _label_frame(input_rgb, "input (degraded)"),
+        _label_frame(gt_rgb,    "gt_rgb (clean FG)"),
+        _label_frame(alpha_rgb, "gt_alpha (clean)"),
+        _label_frame(hint_rgb,  f"hint ({hint_label})"),
     ]
     return np.hstack(panels)
 
@@ -185,24 +188,34 @@ def main() -> None:
 
     # 1. Run one randomized augmentation via preprocess_solo.
     if not args.keep_existing:
-        for old in list(args.output.glob("input.*")) + list(args.output.glob("alpha.*")):
+        for old in (list(args.output.glob("input.*"))
+                    + list(args.output.glob("gt_rgb.*"))
+                    + list(args.output.glob("gt_alpha.*"))):
             old.unlink()
     preprocess_solo(clip_in, args.output, seed=seed, fps=args.fps)
 
     input_videos = list(args.output.glob("input.*"))
-    alpha_videos = list(args.output.glob("alpha.*"))
-    if not input_videos or not alpha_videos:
-        raise SystemExit(f"preprocess_solo did not produce input/alpha under {args.output}")
-    input_video, alpha_video = input_videos[0], alpha_videos[0]
-    print(f"[preprocess] seed={seed}  input={input_video.name}  alpha={alpha_video.name}")
+    gt_rgb_path = args.output / "gt_rgb.mkv"
+    gt_alpha_path = args.output / "gt_alpha.mkv"
+    if not input_videos or not gt_rgb_path.exists() or not gt_alpha_path.exists():
+        raise SystemExit(f"preprocess_solo did not produce all expected outputs under {args.output}")
+    input_video = input_videos[0]
+    print(f"[preprocess] seed={seed}  input={input_video.name}  "
+          f"gt_rgb={gt_rgb_path.name}  gt_alpha={gt_alpha_path.name}")
 
-    # 2. Decode both streams back to frames.
+    settings_path = args.output / "augment_settings.json"
+    if settings_path.exists():
+        print(f"[augment settings] (from {settings_path.name})")
+        print(json.dumps(json.loads(settings_path.read_text()), indent=2))
+
+    # 2. Decode all three streams back to frames.
     decoded_root = args.output / "_decoded"
     if decoded_root.exists():
         shutil.rmtree(decoded_root)
-    input_frames = _decode_video(input_video,  decoded_root / "input")
-    alpha_frames = _decode_video(alpha_video,  decoded_root / "alpha")
-    n = min(len(input_frames), len(alpha_frames))
+    input_frames = _decode_video(input_video,    decoded_root / "input")
+    gt_rgb_frames = _decode_video(gt_rgb_path,   decoded_root / "gt_rgb")
+    gt_alpha_frames = _decode_video(gt_alpha_path, decoded_root / "gt_alpha")
+    n = min(len(input_frames), len(gt_rgb_frames), len(gt_alpha_frames))
     if n == 0:
         raise SystemExit("No frames decoded from preprocess output.")
     print(f"[decode] {n} frames")
@@ -213,21 +226,35 @@ def main() -> None:
         shutil.rmtree(frames_dir)
     frames_dir.mkdir()
 
-    kinds_used: set[str] = set()
+    # Lock hint kind + hint RNG params for the whole clip. Each frame
+    # reseeds from the same clip-level seed so kernel sizes, box looseness,
+    # chroma thresholds, etc. are identical across frames — only the inputs
+    # change. This matches what the real dataloader should do per-clip.
+    hint_kind = args.hint
+    if hint_kind == "random":
+        hint_kind = str(rng.choice(["trimap", "box", "chroma", "chroma_gated", "zero"]))
+    hint_seed = int(rng.integers(0, 2**31))
+    print(f"[hint] kind={hint_kind}  seed={hint_seed}  (locked per-clip)")
+
     for i in range(n):
         rgb = cv2.imread(str(input_frames[i]), cv2.IMREAD_COLOR)
-        alpha = cv2.imread(str(alpha_frames[i]), cv2.IMREAD_GRAYSCALE)
-        if rgb is None or alpha is None:
+        gt_rgb = cv2.imread(str(gt_rgb_frames[i]), cv2.IMREAD_COLOR)
+        gt_alpha = cv2.imread(str(gt_alpha_frames[i]), cv2.IMREAD_GRAYSCALE)
+        if rgb is None or gt_rgb is None or gt_alpha is None:
             continue
-        if rgb.shape[:2] != alpha.shape[:2]:
-            alpha = cv2.resize(alpha, (rgb.shape[1], rgb.shape[0]),
-                               interpolation=cv2.INTER_LINEAR)
-        kind, hint = _make_hint(args.hint, rgb, alpha, rng)
-        kinds_used.add(kind)
-        panel = _stack_side_by_side(rgb, alpha, hint, kind)
+        th, tw = rgb.shape[:2]
+        if gt_rgb.shape[:2] != (th, tw):
+            gt_rgb = cv2.resize(gt_rgb, (tw, th), interpolation=cv2.INTER_LINEAR)
+        if gt_alpha.shape[:2] != (th, tw):
+            gt_alpha = cv2.resize(gt_alpha, (tw, th), interpolation=cv2.INTER_LINEAR)
+        frame_rng = np.random.default_rng(hint_seed)
+        # Hints are derived from the degraded input for chroma/chroma_gated
+        # (that's what the user actually has at inference) but from the GT
+        # alpha for trimap/box/gated — those are simulating a human-drawn
+        # matte, which is clean.
+        _, hint = _make_hint(hint_kind, rgb, gt_alpha, frame_rng)
+        panel = _stack_side_by_side(rgb, gt_rgb, gt_alpha, hint, hint_kind)
         cv2.imwrite(str(frames_dir / f"{i:06d}.png"), panel)
-
-    print(f"[hint] kinds used: {sorted(kinds_used)}")
 
     # 4. Stitch preview video (extension depends on what ffmpeg supports).
     preview_path = _stitch_preview(frames_dir, args.output, args.fps)

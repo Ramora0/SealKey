@@ -1,40 +1,33 @@
-"""Clip-level randomized augmentation for RGB + N-alpha frame sequences.
+"""Clip-level randomized augmentation with split-quality streams.
 
-Input: an RGB PNG sequence + one or more parallel single-channel alpha PNG
-sequences (matching filenames). Every stage applies identical random
-parameters across the RGB stream and every alpha stream, so they emerge
-spatially and temporally aligned at the same codec level.
+Pipeline processes one *degraded* RGB input alongside N *clean* GT RGB streams
+and N clean alpha streams. Physical stages (geometric, motion_blur, DoF, noise)
+apply to every stream with identical parameters — same affine, same ffmpeg
+motion-blur roll, same DoF mask/sigma, same per-frame noise sample. Quality-
+degrading stages (banding, lossy codec) apply only to the degraded input; GT
+streams are encoded with FFV1 lossless.
 
-Output:
-    If codec stage runs (default): `output_dir/input.<ext>` (degraded RGB) and
-    `output_dir/<label>.<ext>` for each alpha input, where `<ext>` is the
-    rolled codec's native container (mp4 / mpg / webm).
-    If `skip={"codec"}`: separate PNG sequences under `output_dir/rgb/` and
-    `output_dir/<label>/`.
+The point: a model trained against the clean GT will learn to undo green-screen
+composite, codec artifacts, and color banding, while preserving real scene
+content (motion, DoF, sensor noise).
 
-Pipeline (in order):
-    1. Geometric trajectory — smooth per-frame affine shared across RGB+alphas.
-    2. Motion blur — ffmpeg minterpolate + tmix per stream, identical params.
-    3. Per-frame optical — DoF (RGB edge-guide uses the *union* of all alphas;
-       each alpha uses its own), RGB-only sharpen/noise, banding on all.
-    4. Codec — single (codec, CRF) roll applied to every stream.
-
-The legacy RGBA wrapper `augment_clip(input_dir, output_dir, ...)` splits an
-RGBA PNG sequence into RGB + single-alpha, calls augment_multi, and emits
-`input.<ext>` + `alpha.<ext>` (or legacy RGBA PNGs when codec is skipped).
+Outputs (codec stage default):
+    <output_dir>/input.<ext>        — degraded RGB (rolled lossy codec)
+    <output_dir>/<gt_rgb_label>.mkv — clean GT RGB (FFV1)
+    <output_dir>/<alpha_label>.mkv  — clean GT alpha (FFV1)
+    <output_dir>/augment_settings.json
 
 Usage:
-    from src.augment import augment_clip, augment_multi
-    augment_clip(Path("frames/"), Path("out/"), seed=0, fps=24)
-    augment_multi(rgb_dir, [alpha_target_dir, alpha_distractor_dir],
-                  out_dir, alpha_labels=["alpha_target", "alpha_distractor"],
-                  seed=0, fps=24)
+    from src.augment import augment_multi
+    augment_multi(input_rgb_dir=composite_dir,
+                  gt_rgb_dirs=[fg_rgb_dir], gt_rgb_labels=["gt_rgb"],
+                  alpha_dirs=[alpha_dir],    alpha_labels=["gt_alpha"],
+                  output_dir=out, seed=0, fps=24)
 """
 
 from __future__ import annotations
 
-import argparse
-import random
+import json
 import shutil
 import subprocess
 import tempfile
@@ -105,74 +98,58 @@ def _smooth_trajectory(n: int, amp: float, rng: np.random.Generator,
 
 
 # ---------------------------------------------------------------------------
-# RGBA ↔ (RGB, alpha) helpers
-# ---------------------------------------------------------------------------
-
-def _split_rgba(src_paths: list[Path], rgb_dir: Path, alpha_dir: Path) -> None:
-    for p in src_paths:
-        f = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
-        cv2.imwrite(str(rgb_dir / p.name), f[..., :3])
-        cv2.imwrite(str(alpha_dir / p.name), f[..., 3])
-
-
-def _merge_rgba(rgb_dir: Path, alpha_dir: Path, out_dir: Path,
-                names: list[str], target_hw: tuple[int, int]) -> None:
-    th, tw = target_hw
-    for name in names:
-        rgb_p = rgb_dir / name
-        a_p = alpha_dir / name
-        if not rgb_p.exists() or not a_p.exists():
-            continue
-        rgb = cv2.imread(str(rgb_p), cv2.IMREAD_COLOR)
-        a = cv2.imread(str(a_p), cv2.IMREAD_GRAYSCALE)
-        if rgb is None or a is None:
-            continue
-        rgb = rgb[:th, :tw]
-        a = a[:th, :tw]
-        if rgb.shape[:2] != (th, tw):
-            rgb = cv2.resize(rgb, (tw, th), interpolation=cv2.INTER_LINEAR)
-        if a.shape[:2] != (th, tw):
-            a = cv2.resize(a, (tw, th), interpolation=cv2.INTER_LINEAR)
-        cv2.imwrite(str(out_dir / name), np.dstack([rgb, a]))
-
-
-# ---------------------------------------------------------------------------
 # Stage 1: geometric — shared warp across RGB + all alphas
 # ---------------------------------------------------------------------------
 
-def _stage_geometric_multi(
-    rgb_paths: list[Path],
-    alpha_paths_list: list[list[Path]],
-    rgb_out: Path,
+def _apply_geometric_all(
+    rgb_dirs: list[Path],
+    alpha_dirs: list[Path],
+    rgb_outs: list[Path],
     alpha_outs: list[Path],
     rng: np.random.Generator,
-) -> None:
-    n = len(rgb_paths)
-    first = cv2.imread(str(rgb_paths[0]), cv2.IMREAD_COLOR)
-    h, w = first.shape[:2]
+) -> dict:
+    """Roll one smooth affine trajectory and apply to every RGB + alpha stream.
 
-    tx = _smooth_trajectory(n, amp=rng.uniform(0.01, 0.025) * w, rng=rng)
-    ty = _smooth_trajectory(n, amp=rng.uniform(0.01, 0.025) * h, rng=rng)
-    theta = _smooth_trajectory(n, amp=rng.uniform(0.5, 1.5), rng=rng)
-    scale = 1.0 + _smooth_trajectory(n, amp=rng.uniform(0.005, 0.015), rng=rng)
+    RGB uses BORDER_REPLICATE (padded edges look like extended scene); alpha
+    uses BORDER_CONSTANT=0 (newly-exposed margin is transparent).
+    """
+    rgb_paths_list = [sorted(d.glob("*.png")) for d in rgb_dirs]
+    alpha_paths_list = [sorted(d.glob("*.png")) for d in alpha_dirs]
+    ref = rgb_paths_list[0] if rgb_paths_list else alpha_paths_list[0]
+    first = cv2.imread(str(ref[0]), cv2.IMREAD_UNCHANGED)
+    h, w = first.shape[:2]
+    n = len(ref)
+
+    tx_amp    = float(rng.uniform(0.01, 0.025) * w)
+    ty_amp    = float(rng.uniform(0.01, 0.025) * h)
+    theta_amp = float(rng.uniform(0.5, 1.5))
+    scale_amp = float(rng.uniform(0.005, 0.015))
+    tx    = _smooth_trajectory(n, amp=tx_amp, rng=rng)
+    ty    = _smooth_trajectory(n, amp=ty_amp, rng=rng)
+    theta = _smooth_trajectory(n, amp=theta_amp, rng=rng)
+    scale = 1.0 + _smooth_trajectory(n, amp=scale_amp, rng=rng)
 
     for i in range(n):
         M = cv2.getRotationMatrix2D((w / 2, h / 2), float(theta[i]), float(scale[i]))
         M[0, 2] += float(tx[i])
         M[1, 2] += float(ty[i])
 
-        rgb = cv2.imread(str(rgb_paths[i]), cv2.IMREAD_COLOR)
-        rgb_w = cv2.warpAffine(rgb, M, (w, h),
-                               flags=cv2.INTER_LINEAR,
-                               borderMode=cv2.BORDER_REPLICATE)
-        cv2.imwrite(str(rgb_out / rgb_paths[i].name), rgb_w)
-
+        for paths, out in zip(rgb_paths_list, rgb_outs):
+            rgb = cv2.imread(str(paths[i]), cv2.IMREAD_COLOR)
+            rgb_w = cv2.warpAffine(rgb, M, (w, h), flags=cv2.INTER_LINEAR,
+                                   borderMode=cv2.BORDER_REPLICATE)
+            cv2.imwrite(str(out / paths[i].name), rgb_w)
         for paths, out in zip(alpha_paths_list, alpha_outs):
             a = cv2.imread(str(paths[i]), cv2.IMREAD_GRAYSCALE)
-            a_w = cv2.warpAffine(a, M, (w, h),
-                                 flags=cv2.INTER_LINEAR,
+            a_w = cv2.warpAffine(a, M, (w, h), flags=cv2.INTER_LINEAR,
                                  borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             cv2.imwrite(str(out / paths[i].name), a_w)
+
+    return {
+        "on": True,
+        "tx_amp_px": tx_amp, "ty_amp_px": ty_amp,
+        "theta_amp_deg": theta_amp, "scale_amp": scale_amp,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -214,43 +191,58 @@ def _alpha_edge_mask(alpha: np.ndarray, thickness: int) -> np.ndarray:
 
 
 def _stage_per_frame_multi(
-    rgb_paths: list[Path],
+    rgb_paths_list: list[list[Path]],
+    rgb_is_degraded: list[bool],
     alpha_paths_list: list[list[Path]],
-    rgb_out: Path,
+    rgb_outs: list[Path],
     alpha_outs: list[Path],
     rng: np.random.Generator,
-) -> None:
-    do_dof = rng.random() < 0.4
-    dof_sigma = rng.uniform(1.5, 4.0)
+) -> dict:
+    """Per-frame optical ops across multiple RGB streams + alphas.
+
+    Physical (apply to all RGB streams): DoF, noise.
+    Quality-degrading (apply only to `rgb_is_degraded=True` streams): banding.
+    DoF on alphas uses each alpha's own edges.
+
+    Noise is sampled once per frame and added to every RGB stream so the clean
+    GT RGB and degraded input share the same noise pattern — otherwise a
+    clean-GT L1 loss would penalize the model for keeping noise the input
+    actually contains.
+    """
+    do_dof = bool(rng.random() < 0.4)
+    dof_sigma = float(rng.uniform(1.5, 4.0))
     dof_thickness = int(rng.integers(6, 20))
 
-    do_sharpen = rng.random() < 0.35
-    sharpen_amount = rng.uniform(1.2, 2.5)
-    sharpen_sigma = rng.uniform(0.8, 2.0)
+    do_noise = bool(rng.random() < 0.6)
+    noise_sigma = float(rng.uniform(3.0, 15.0))
 
-    do_noise = rng.random() < 0.6
-    noise_sigma = rng.uniform(3.0, 15.0)
-
-    do_banding = rng.random() < 0.25
+    do_banding = bool(rng.random() < 0.25)
     banding_bits = int(rng.integers(3, 6))
 
-    n = len(rgb_paths)
+    assert len(rgb_paths_list) == len(rgb_is_degraded) == len(rgb_outs)
+    assert len(alpha_paths_list) == len(alpha_outs)
+    n = len(rgb_paths_list[0]) if rgb_paths_list else len(alpha_paths_list[0])
+
     for i in range(n):
-        rgb = cv2.imread(str(rgb_paths[i]), cv2.IMREAD_COLOR)
+        rgbs = [cv2.imread(str(paths[i]), cv2.IMREAD_COLOR) for paths in rgb_paths_list]
         alphas = [cv2.imread(str(paths[i]), cv2.IMREAD_GRAYSCALE) for paths in alpha_paths_list]
 
         if do_dof:
-            # RGB uses the union of all alphas as DoF edge guide; each alpha
-            # uses its own edges. For the single-alpha wrapper case, union
-            # reduces to the one alpha, so behavior matches the old pipeline.
+            # Union of all alphas guides the RGB DoF blur; each alpha uses its
+            # own edges.
             if alphas:
                 union = np.maximum.reduce(alphas)
             else:
-                union = np.zeros(rgb.shape[:2], dtype=np.uint8)
+                union = np.zeros(rgbs[0].shape[:2], dtype=np.uint8)
             union_band = _alpha_edge_mask(union, dof_thickness)
-            br = cv2.GaussianBlur(rgb, (0, 0), sigmaX=dof_sigma)
             m = union_band[..., None]
-            rgb = (rgb.astype(np.float32) * (1 - m) + br.astype(np.float32) * m).astype(np.uint8)
+            new_rgbs = []
+            for rgb in rgbs:
+                br = cv2.GaussianBlur(rgb, (0, 0), sigmaX=dof_sigma)
+                new_rgbs.append(
+                    (rgb.astype(np.float32) * (1 - m) + br.astype(np.float32) * m).astype(np.uint8)
+                )
+            rgbs = new_rgbs
 
             new_alphas = []
             for a in alphas:
@@ -260,33 +252,65 @@ def _stage_per_frame_multi(
                 new_alphas.append(a)
             alphas = new_alphas
 
-        if do_sharpen:
-            blurred = cv2.GaussianBlur(rgb, (0, 0), sigmaX=sharpen_sigma)
-            sharp = rgb.astype(np.float32) * (1 + sharpen_amount) \
-                    - blurred.astype(np.float32) * sharpen_amount
-            rgb = np.clip(sharp, 0, 255).astype(np.uint8)
-
-        if do_noise:
-            noise = rng.normal(0, noise_sigma, rgb.shape).astype(np.float32)
-            rgb = np.clip(rgb.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+        if do_noise and rgbs:
+            # One noise sample per frame, shared across all RGB streams so
+            # clean-GT stays noise-aligned with degraded input.
+            noise = rng.normal(0, noise_sigma, rgbs[0].shape).astype(np.float32)
+            rgbs = [np.clip(rgb.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+                    for rgb in rgbs]
 
         if do_banding:
             levels = 2 ** banding_bits
             step = 256 // levels
-            rgb = ((rgb // step) * step).astype(np.uint8)
-            alphas = [((a // step) * step).astype(np.uint8) for a in alphas]
+            rgbs = [((rgb // step) * step).astype(np.uint8) if deg else rgb
+                    for rgb, deg in zip(rgbs, rgb_is_degraded)]
+            # Alphas are always clean — no banding on alpha.
 
-        cv2.imwrite(str(rgb_out / rgb_paths[i].name), rgb)
+        for rgb, paths, out in zip(rgbs, rgb_paths_list, rgb_outs):
+            cv2.imwrite(str(out / paths[i].name), rgb)
         for a, paths, out in zip(alphas, alpha_paths_list, alpha_outs):
             cv2.imwrite(str(out / paths[i].name), a)
+
+    return {
+        "dof": {"on": do_dof, "sigma": dof_sigma, "thickness": dof_thickness},
+        "noise": {"on": do_noise, "sigma": noise_sigma,
+                  "note": "shared sample across all RGB streams"},
+        "banding": {"on": do_banding, "bits": banding_bits,
+                    "note": "applied only to degraded streams"},
+    }
 
 
 # ---------------------------------------------------------------------------
 # Stage 4: codec encode
 # ---------------------------------------------------------------------------
 
+# FFV1 in Matroska: truly lossless, 4:4:4 yuv, built into every ffmpeg core
+# build (no external lib dependency). Used for all GT (clean) streams.
+LOSSLESS = {"encoder": "ffv1", "container": "mkv", "pix_fmt": "yuv444p"}
+
+
+def _ffmpeg_lossless_encode(in_dir: Path, out_path: Path, fps: int) -> None:
+    """Encode a PNG sequence losslessly (FFV1 in .mkv, yuv444p)."""
+    enc = [
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-i", str(in_dir / "%06d.png"),
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", LOSSLESS["encoder"],
+        "-pix_fmt", LOSSLESS["pix_fmt"],
+        "-level", "3",
+        str(out_path),
+    ]
+    r = subprocess.run(enc, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg FFV1 encode failed exit={r.returncode}\n"
+            f"--- stderr ---\n{r.stderr.decode(errors='replace')}"
+        )
+
+
 def _ffmpeg_codec_encode(in_dir: Path, out_path: Path, fps: int,
-                         codec: dict, level: int) -> None:
+                         codec: dict, level: int, pix_fmt: str) -> None:
     """Encode a PNG sequence to a single MP4 at the given codec/level.
 
     No decode — the MP4 is the codec pass's direct output. Downstream
@@ -298,7 +322,7 @@ def _ffmpeg_codec_encode(in_dir: Path, out_path: Path, fps: int,
         "-i", str(in_dir / "%06d.png"),
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
         "-c:v", codec["encoder"],
-        "-pix_fmt", "yuv420p",
+        "-pix_fmt", pix_fmt,
     ]
     if codec["mode"] == "crf":
         enc += ["-crf", str(level)]
@@ -320,189 +344,175 @@ def _ffmpeg_codec_encode(in_dir: Path, out_path: Path, fps: int,
 # ---------------------------------------------------------------------------
 
 def augment_multi(
-    rgb_dir: Path,
+    input_rgb_dir: Path,
+    gt_rgb_dirs: list[Path],
+    gt_rgb_labels: list[str],
     alpha_dirs: list[Path],
-    output_dir: Path,
     alpha_labels: list[str],
+    output_dir: Path,
     seed: int | None = None,
     fps: int = 24,
     skip: set[str] | None = None,
 ) -> None:
-    """Augment one RGB stream + N parallel alpha streams together.
+    """Augment a degraded RGB input alongside clean GT RGB + alpha streams.
 
-    Every stage applies identical random parameters to every stream so the
-    result is a single codec pass at a single quality level, spatially and
-    temporally aligned.
+    Every RGB stream shares the same physical augmentations (geometric,
+    motion_blur, DoF, noise — same parameters and same noise sample). Quality-
+    degrading stages (banding, lossy codec) are applied only to `input_rgb_dir`;
+    GT streams are encoded with FFV1 (lossless, 4:4:4, in .mkv).
+
+    Outputs:
+        <output_dir>/input.<ext>          — degraded RGB (rolled lossy codec)
+        <output_dir>/<gt_rgb_label>.mkv   — clean GT RGB (FFV1)
+        <output_dir>/<alpha_label>.mkv    — clean GT alpha (FFV1)
+        <output_dir>/augment_settings.json
 
     Args:
-        rgb_dir: directory of 3-channel PNG frames.
-        alpha_dirs: list of directories, each with single-channel PNG frames
-            whose filenames match rgb_dir's.
-        output_dir: destination directory. Created if missing.
-        alpha_labels: output filename stems for each alpha, in order matching
-            alpha_dirs. Used as `<label>.<ext>` in the codec output.
+        input_rgb_dir: directory of 3-channel PNGs — the degraded model input.
+        gt_rgb_dirs: directories of 3-channel PNGs — clean pre-composite
+            foreground RGB streams. Filenames must match input_rgb_dir's.
+        gt_rgb_labels: output stems for each gt_rgb dir.
+        alpha_dirs: directories of single-channel PNGs — clean GT alphas.
+        alpha_labels: output stems for each alpha dir.
         seed: RNG seed.
         fps: frame rate for ffmpeg stages.
         skip: optional stage names to skip: {"geometric", "motion_blur",
-            "per_frame", "codec"}. Skipping codec writes the final PNG
-            sequences into `output_dir/rgb/` and `output_dir/<label>/`.
+            "per_frame", "codec"}. Skipping codec writes PNG sequences into
+            per-stream subdirectories instead of encoded video.
     """
+    if len(gt_rgb_dirs) != len(gt_rgb_labels):
+        raise ValueError("gt_rgb_dirs and gt_rgb_labels length mismatch")
     if len(alpha_dirs) != len(alpha_labels):
-        raise ValueError(f"alpha_dirs ({len(alpha_dirs)}) and alpha_labels ({len(alpha_labels)}) must match")
+        raise ValueError("alpha_dirs and alpha_labels length mismatch")
 
     skip = skip or set()
     rng = np.random.default_rng(seed)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rgb_paths = sorted(p for p in rgb_dir.iterdir() if p.suffix.lower() == ".png")
+    settings: dict = {"seed": seed, "fps": fps, "skip": sorted(skip)}
+
+    rgb_paths = sorted(p for p in input_rgb_dir.iterdir() if p.suffix.lower() == ".png")
     if not rgb_paths:
-        raise ValueError(f"No PNG frames in {rgb_dir}")
+        raise ValueError(f"No PNG frames in {input_rgb_dir}")
+    settings["n_frames"] = len(rgb_paths)
+
+    # All RGB streams unified: input first (degraded), GT streams after (clean).
+    all_rgb_dirs = [input_rgb_dir, *gt_rgb_dirs]
+    all_rgb_labels = ["input", *gt_rgb_labels]
+    rgb_is_degraded = [True] + [False] * len(gt_rgb_dirs)
 
     with tempfile.TemporaryDirectory() as tmp_root:
         tmp = Path(tmp_root)
 
+        def _mk_parallel_dirs(tag: str, n: int) -> list[Path]:
+            dirs = [tmp / f"{tag}_{i}" for i in range(n)]
+            for d in dirs:
+                d.mkdir()
+            return dirs
+
         # Stage 0: sequential rename to %06d.png (ffmpeg needs this).
-        cur_rgb = tmp / "00_rgb"; cur_rgb.mkdir()
-        cur_alphas = [tmp / f"00_a{i}" for i in range(len(alpha_dirs))]
-        for d in cur_alphas:
-            d.mkdir()
+        cur_rgbs = _mk_parallel_dirs("00_rgb", len(all_rgb_dirs))
+        cur_alphas = _mk_parallel_dirs("00_a", len(alpha_dirs))
 
         seq_names: list[str] = []
         for i, p in enumerate(rgb_paths):
             name = f"{i:06d}.png"
             seq_names.append(name)
-            shutil.copy(p, cur_rgb / name)
-            for j, alpha_dir in enumerate(alpha_dirs):
-                a_src = alpha_dir / p.name
-                if not a_src.exists():
-                    raise ValueError(f"Missing alpha frame {p.name} in {alpha_dir}")
-                shutil.copy(a_src, cur_alphas[j] / name)
+            for src_dir, dst_dir in zip(all_rgb_dirs, cur_rgbs):
+                s = src_dir / p.name
+                if not s.exists():
+                    raise ValueError(f"Missing RGB frame {p.name} in {src_dir}")
+                shutil.copy(s, dst_dir / name)
+            for src_dir, dst_dir in zip(alpha_dirs, cur_alphas):
+                s = src_dir / p.name
+                if not s.exists():
+                    raise ValueError(f"Missing alpha frame {p.name} in {src_dir}")
+                shutil.copy(s, dst_dir / name)
 
         # Stage 1: geometric
         if "geometric" not in skip:
-            nxt_rgb = tmp / "01_rgb"; nxt_rgb.mkdir()
-            nxt_alphas = [tmp / f"01_a{i}" for i in range(len(alpha_dirs))]
-            for d in nxt_alphas:
-                d.mkdir()
-            _stage_geometric_multi(
-                sorted(cur_rgb.glob("*.png")),
-                [sorted(d.glob("*.png")) for d in cur_alphas],
-                nxt_rgb, nxt_alphas, rng,
+            nxt_rgbs = _mk_parallel_dirs("01_rgb", len(cur_rgbs))
+            nxt_alphas = _mk_parallel_dirs("01_a", len(cur_alphas))
+            # _stage_geometric_multi takes one "reference" RGB for sizing;
+            # run it once across ALL streams by passing the combined list as
+            # alphas is awkward. Instead, we roll the affine here and apply it
+            # uniformly. Keep existing helper but extend it inline:
+            settings["geometric"] = _apply_geometric_all(
+                cur_rgbs, cur_alphas, nxt_rgbs, nxt_alphas, rng,
             )
-            cur_rgb, cur_alphas = nxt_rgb, nxt_alphas
+            cur_rgbs, cur_alphas = nxt_rgbs, nxt_alphas
+        else:
+            settings["geometric"] = {"on": False}
 
-        # Stage 2: motion blur
-        if "motion_blur" not in skip and rng.random() < 0.7:
+        # Stage 2: motion blur (physical — applied to all streams)
+        do_blur = "motion_blur" not in skip and rng.random() < 0.7
+        if do_blur:
             factor = int(rng.integers(3, 6))
             n_mix = factor
-            nxt_rgb = tmp / "02_rgb"; nxt_rgb.mkdir()
-            _ffmpeg_motion_blur(cur_rgb, nxt_rgb, fps, factor, n_mix)
-            nxt_alphas = []
-            for i, d in enumerate(cur_alphas):
-                nd = tmp / f"02_a{i}"; nd.mkdir()
-                _ffmpeg_motion_blur(d, nd, fps, factor, n_mix)
-                nxt_alphas.append(nd)
-            cur_rgb, cur_alphas = nxt_rgb, nxt_alphas
+            settings["motion_blur"] = {"on": True, "factor": factor, "n_mix": n_mix}
+            nxt_rgbs = _mk_parallel_dirs("02_rgb", len(cur_rgbs))
+            nxt_alphas = _mk_parallel_dirs("02_a", len(cur_alphas))
+            for d_in, d_out in zip(cur_rgbs + cur_alphas, nxt_rgbs + nxt_alphas):
+                _ffmpeg_motion_blur(d_in, d_out, fps, factor, n_mix)
+            cur_rgbs, cur_alphas = nxt_rgbs, nxt_alphas
+        else:
+            settings["motion_blur"] = {"on": False}
 
-        # Stage 3: per-frame optical
+        # Stage 3: per-frame optical (DoF+noise physical; banding degraded-only)
         if "per_frame" not in skip:
-            nxt_rgb = tmp / "03_rgb"; nxt_rgb.mkdir()
-            nxt_alphas = [tmp / f"03_a{i}" for i in range(len(cur_alphas))]
-            for d in nxt_alphas:
-                d.mkdir()
-            _stage_per_frame_multi(
-                sorted(cur_rgb.glob("*.png")),
+            nxt_rgbs = _mk_parallel_dirs("03_rgb", len(cur_rgbs))
+            nxt_alphas = _mk_parallel_dirs("03_a", len(cur_alphas))
+            settings["per_frame"] = _stage_per_frame_multi(
+                [sorted(d.glob("*.png")) for d in cur_rgbs],
+                rgb_is_degraded,
                 [sorted(d.glob("*.png")) for d in cur_alphas],
-                nxt_rgb, nxt_alphas, rng,
+                nxt_rgbs, nxt_alphas, rng,
             )
-            cur_rgb, cur_alphas = nxt_rgb, nxt_alphas
+            cur_rgbs, cur_alphas = nxt_rgbs, nxt_alphas
+        else:
+            settings["per_frame"] = {"on": False}
 
-        # Stage 4: codec (encode-only; MP4s are the output)
+        # Stage 4: encode. Degraded stream gets the rolled lossy codec; clean
+        # streams always get FFV1 lossless.
         if "codec" not in skip:
             codec = CODECS[int(rng.integers(len(CODECS)))]
             lo, hi = codec["range"]
             level = int(rng.integers(lo, hi + 1))
             ext = codec["container"]
-            _ffmpeg_codec_encode(cur_rgb, output_dir / f"input.{ext}", fps, codec, level)
+            pix_fmt = "yuv422p" if rng.random() < 0.5 else "yuv420p"
+            settings["codec"] = {
+                "input": {"encoder": codec["encoder"], "mode": codec["mode"],
+                          "level": level, "container": ext, "pix_fmt": pix_fmt},
+                "gt": {"encoder": LOSSLESS["encoder"],
+                       "container": LOSSLESS["container"],
+                       "pix_fmt": LOSSLESS["pix_fmt"]},
+            }
+            # input (degraded) — rolled codec
+            _ffmpeg_codec_encode(cur_rgbs[0], output_dir / f"input.{ext}",
+                                 fps, codec, level, pix_fmt)
+            # clean GT RGBs — FFV1
+            for d, label in zip(cur_rgbs[1:], gt_rgb_labels):
+                _ffmpeg_lossless_encode(d, output_dir / f"{label}.mkv", fps)
+            # clean alphas — FFV1
             for d, label in zip(cur_alphas, alpha_labels):
-                _ffmpeg_codec_encode(d, output_dir / f"{label}.{ext}", fps, codec, level)
+                _ffmpeg_lossless_encode(d, output_dir / f"{label}.mkv", fps)
+            (output_dir / "augment_settings.json").write_text(
+                json.dumps(settings, indent=2)
+            )
             return
+        settings["codec"] = {"on": False}
 
         # Codec skipped: copy final PNG streams into per-stream subdirectories.
-        rgb_out = output_dir / "rgb"; rgb_out.mkdir(exist_ok=True)
-        for name, orig in zip(seq_names, rgb_paths):
-            shutil.copy(cur_rgb / name, rgb_out / orig.name)
-        for d, label in zip(cur_alphas, alpha_labels):
-            lbl_out = output_dir / label; lbl_out.mkdir(exist_ok=True)
+        for d, label in zip(cur_rgbs, all_rgb_labels):
+            out = output_dir / label; out.mkdir(exist_ok=True)
             for name, orig in zip(seq_names, rgb_paths):
-                shutil.copy(d / name, lbl_out / orig.name)
+                shutil.copy(d / name, out / orig.name)
+        for d, label in zip(cur_alphas, alpha_labels):
+            out = output_dir / label; out.mkdir(exist_ok=True)
+            for name, orig in zip(seq_names, rgb_paths):
+                shutil.copy(d / name, out / orig.name)
+        (output_dir / "augment_settings.json").write_text(
+            json.dumps(settings, indent=2)
+        )
 
 
-def augment_clip(
-    input_dir: Path,
-    output_dir: Path,
-    seed: int | None = None,
-    fps: int = 24,
-    skip: set[str] | None = None,
-) -> None:
-    """Augment an RGBA PNG sequence (single-alpha wrapper over augment_multi).
-
-    When codec runs, outputs `input.<ext>` + `alpha.<ext>` to output_dir.
-    When codec is skipped, outputs legacy-style RGBA PNGs to output_dir.
-    """
-    skip = skip or set()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    paths = sorted(p for p in input_dir.iterdir() if p.suffix.lower() == ".png")
-    if not paths:
-        raise ValueError(f"No PNG frames in {input_dir}")
-    first = cv2.imread(str(paths[0]), cv2.IMREAD_UNCHANGED)
-    if first is None or first.ndim != 3 or first.shape[2] != 4:
-        raise ValueError(f"Expected RGBA PNGs; {paths[0]} is {None if first is None else first.shape}")
-
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        rgb_tmp = td / "rgb"; rgb_tmp.mkdir()
-        alpha_tmp = td / "alpha"; alpha_tmp.mkdir()
-        _split_rgba(paths, rgb_tmp, alpha_tmp)
-
-        if "codec" in skip:
-            # Legacy RGBA inspection output: run augment_multi with codec
-            # skipped, then merge back to RGBA PNGs.
-            stage_out = td / "stage_out"; stage_out.mkdir()
-            augment_multi(rgb_tmp, [alpha_tmp], stage_out,
-                          alpha_labels=["alpha"],
-                          seed=seed, fps=fps, skip=skip)
-            _merge_rgba(stage_out / "rgb", stage_out / "alpha",
-                        output_dir, [p.name for p in paths], first.shape[:2])
-        else:
-            augment_multi(rgb_tmp, [alpha_tmp], output_dir,
-                          alpha_labels=["alpha"],
-                          seed=seed, fps=fps, skip=skip)
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description="Augment a PNG-frame video clip.")
-    parser.add_argument("--input", type=Path, required=True,
-                        help="Input directory of RGBA PNG frames.")
-    parser.add_argument("--output", type=Path, required=True,
-                        help="Output directory for augmented frames.")
-    parser.add_argument("--fps", type=int, default=24)
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--skip", nargs="*", default=None,
-                        choices=["geometric", "motion_blur", "per_frame", "codec"],
-                        help="Stages to skip.")
-    args = parser.parse_args()
-
-    seed = args.seed if args.seed is not None else random.randint(0, 2**31)
-    augment_clip(args.input, args.output, seed=seed, fps=args.fps,
-                 skip=set(args.skip) if args.skip else None)
-    print(f"Augmented clip → {args.output}")
-
-
-if __name__ == "__main__":
-    main()

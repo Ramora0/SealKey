@@ -11,17 +11,21 @@ Hint-channel generation is done at runtime by the dataloader using
 `src.hint_generators` — no hint files are stored here.
 
 Output per solo clip:
-    <output>/<clip>/input.<ext>   — degraded RGB composite (model input)
-    <output>/<clip>/alpha.<ext>   — co-degraded matte (training target)
+    <output>/<clip>/input.<ext>    — degraded RGB composite (model input)
+    <output>/<clip>/gt_rgb.mkv     — clean pre-composite foreground RGB (FFV1)
+    <output>/<clip>/gt_alpha.mkv   — clean matte (FFV1)
 
 Output per double clip:
-    <output>/double_<i>/input.<ext>             — multi-subject composite
-    <output>/double_<i>/alpha_target.<ext>      — target visible alpha
-    <output>/double_<i>/alpha_distractor.<ext>  — distractor visible alpha,
-                                                   masked by target
-    <output>/double_<i>/manifest.json           — source clips + placement
+    <output>/double_<i>/input.<ext>               — multi-subject composite
+    <output>/double_<i>/gt_rgb_target.mkv         — clean target RGB (FFV1)
+    <output>/double_<i>/gt_alpha_target.mkv       — clean target alpha (FFV1)
+    <output>/double_<i>/gt_rgb_distractor.mkv     — clean distractor RGB (FFV1)
+    <output>/double_<i>/gt_alpha_distractor.mkv   — distractor alpha masked by
+                                                     target (FFV1)
+    <output>/double_<i>/manifest.json             — source clips + placement
 
-Extension varies by rolled codec (mp4 / mpg / webm — see augment.CODECS).
+Degraded `input` extension varies by rolled codec (see augment.CODECS). GT
+streams are always FFV1 in .mkv — lossless, 4:4:4, built into every ffmpeg.
 
 Layout expected for --input (both modes): one or more paths. Each may be
     - A clip directory containing RGBA PNG frames, OR
@@ -107,10 +111,15 @@ def _subject_trajectory(clip_in: Path, out_dir: Path,
 # Solo: composite one subject over one green screen
 # ---------------------------------------------------------------------------
 
-def _composite_solo(clip_in: Path, rgb_out: Path, alpha_out: Path,
-                    rng: np.random.Generator) -> None:
-    """Composite each RGBA frame over a generated green screen. Writes a
-    3-channel RGB PNG to rgb_out and a grayscale alpha PNG to alpha_out."""
+def _composite_solo(clip_in: Path, comp_out: Path, fg_rgb_out: Path,
+                    alpha_out: Path, rng: np.random.Generator) -> str:
+    """Split each RGBA frame into three streams:
+        comp_out    — RGB composited onto a generated green screen (model input)
+        fg_rgb_out  — clean pre-composite foreground RGB (GT target)
+        alpha_out   — grayscale alpha (GT target)
+
+    Returns the green-screen profile used (for manifest/logging).
+    """
     paths = sorted(p for p in clip_in.iterdir() if p.suffix.lower() == ".png")
     if not paths:
         raise ValueError(f"No PNG frames in {clip_in}")
@@ -120,23 +129,25 @@ def _composite_solo(clip_in: Path, rgb_out: Path, alpha_out: Path,
         raise ValueError(f"Expected RGBA PNG, got {None if first is None else first.shape} for {paths[0]}")
     h, w = first.shape[:2]
 
-    gs_profile = rng.choice(["clean", "moderate", "messy"], p=[0.25, 0.45, 0.30])
+    gs_profile = str(rng.choice(["clean", "moderate", "messy"], p=[0.25, 0.45, 0.30]))
     gs = generate_green_screen(height=h, width=w,
                                seed=int(rng.integers(0, 2**31)),
-                               profile=str(gs_profile))
+                               profile=gs_profile)
     gs_f = gs.astype(np.float32)
 
     for p in paths:
         frame = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
         if frame is None or frame.shape[2] != 4:
             continue
-        rgb = frame[..., :3].astype(np.float32)
+        rgb = frame[..., :3]
         alpha_u8 = frame[..., 3]
         a = (alpha_u8.astype(np.float32) / 255.0)[..., None]
-        comp = rgb * a + gs_f * (1.0 - a)
+        comp = rgb.astype(np.float32) * a + gs_f * (1.0 - a)
         comp = np.clip(comp, 0, 255).astype(np.uint8)
-        cv2.imwrite(str(rgb_out / p.name), comp)
+        cv2.imwrite(str(comp_out / p.name), comp)
+        cv2.imwrite(str(fg_rgb_out / p.name), rgb)
         cv2.imwrite(str(alpha_out / p.name), alpha_u8)
+    return gs_profile
 
 
 def _solo_done(clip_out: Path) -> bool:
@@ -144,7 +155,8 @@ def _solo_done(clip_out: Path) -> bool:
     return (
         clip_out.is_dir()
         and any(clip_out.glob("input.*"))
-        and any(clip_out.glob("alpha.*"))
+        and (clip_out / "gt_rgb.mkv").exists()
+        and (clip_out / "gt_alpha.mkv").exists()
     )
 
 
@@ -154,10 +166,9 @@ def preprocess_solo(
     seed: int,
     fps: int = 24,
 ) -> None:
-    """Trajectory → composite → augment. Writes input.<ext> + alpha.<ext>.
+    """Trajectory → composite → augment. Writes input.<ext> + gt_rgb.mkv + gt_alpha.mkv.
 
-    Idempotent: if `clip_out/input.*` and `clip_out/alpha.*` already exist,
-    returns immediately without redoing the work.
+    Idempotent: if all three outputs already exist, returns immediately.
     """
     if _solo_done(clip_out):
         return
@@ -167,14 +178,17 @@ def preprocess_solo(
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         moved   = tmp / "moved";   moved.mkdir()
-        rgb_dir = tmp / "rgb";     rgb_dir.mkdir()
-        a_dir   = tmp / "alpha";   a_dir.mkdir()
+        comp    = tmp / "comp";    comp.mkdir()   # composited RGB (degraded)
+        fg_rgb  = tmp / "fg_rgb";  fg_rgb.mkdir() # clean pre-composite RGB
+        a_dir   = tmp / "alpha";   a_dir.mkdir()  # clean alpha
 
         _subject_trajectory(clip_in, moved, rng)
-        _composite_solo(moved, rgb_dir, a_dir, rng)
+        _composite_solo(moved, comp, fg_rgb, a_dir, rng)
         augment_multi(
-            rgb_dir, [a_dir], clip_out,
-            alpha_labels=["alpha"],
+            input_rgb_dir=comp,
+            gt_rgb_dirs=[fg_rgb],  gt_rgb_labels=["gt_rgb"],
+            alpha_dirs=[a_dir],    alpha_labels=["gt_alpha"],
+            output_dir=clip_out,
             seed=int(rng.integers(0, 2**31)),
             fps=fps,
             skip={"geometric"},
@@ -233,11 +247,18 @@ def _compose_double(target_paths: list[Path],
                     canvas_hw: tuple[int, int],
                     target_place: tuple[int, int, int, int],
                     distractor_place: tuple[int, int, int, int],
-                    out_rgb_dir: Path,
+                    out_comp_dir: Path,
+                    out_target_rgb_dir: Path,
                     out_target_alpha_dir: Path,
+                    out_distractor_rgb_dir: Path,
                     out_distractor_alpha_dir: Path) -> None:
-    """Composite bg → distractor → target. Writes RGB + per-subject visible
-    alphas (distractor masked by target, so the two alphas are disjoint)."""
+    """Composite bg → distractor → target (writes degraded input), and also
+    emit clean per-subject RGB + alpha on canvas-sized transparent planes.
+
+    Target streams are full. Distractor alpha is masked by the target (so the
+    two GT alphas are disjoint, matching what's actually visible in the
+    composite); distractor RGB is left unmasked — the alpha handles occlusion
+    in any compositing loss."""
     gs_f = gs_bg.astype(np.float32)
     n = min(len(target_paths), len(distractor_paths))
 
@@ -252,25 +273,27 @@ def _compose_double(target_paths: list[Path],
         t_on_canvas = _place_on_canvas(t_frame, canvas_hw, *target_place)
         d_on_canvas = _place_on_canvas(d_frame, canvas_hw, *distractor_place)
 
-        t_rgb = t_on_canvas[..., :3].astype(np.float32)
-        t_a = (t_on_canvas[..., 3].astype(np.float32) / 255.0)[..., None]
-        d_rgb = d_on_canvas[..., :3].astype(np.float32)
-        d_a = (d_on_canvas[..., 3].astype(np.float32) / 255.0)[..., None]
+        t_rgb = t_on_canvas[..., :3]
+        t_a_u8 = t_on_canvas[..., 3]
+        t_a = (t_a_u8.astype(np.float32) / 255.0)[..., None]
+        d_rgb = d_on_canvas[..., :3]
+        d_a_u8 = d_on_canvas[..., 3]
+        d_a = (d_a_u8.astype(np.float32) / 255.0)[..., None]
 
-        comp = gs_f * (1.0 - d_a) + d_rgb * d_a
-        comp = comp * (1.0 - t_a) + t_rgb * t_a
+        comp = gs_f * (1.0 - d_a) + d_rgb.astype(np.float32) * d_a
+        comp = comp * (1.0 - t_a) + t_rgb.astype(np.float32) * t_a
         comp_u8 = np.clip(comp, 0, 255).astype(np.uint8)
 
-        target_alpha = t_on_canvas[..., 3]
-        distractor_alpha = np.clip(
-            d_on_canvas[..., 3].astype(np.float32) * (1.0 - t_a[..., 0]),
-            0, 255,
+        distractor_alpha_masked = np.clip(
+            d_a_u8.astype(np.float32) * (1.0 - t_a[..., 0]), 0, 255,
         ).astype(np.uint8)
 
         name = f"{i:06d}.png"
-        cv2.imwrite(str(out_rgb_dir / name), comp_u8)
-        cv2.imwrite(str(out_target_alpha_dir / name), target_alpha)
-        cv2.imwrite(str(out_distractor_alpha_dir / name), distractor_alpha)
+        cv2.imwrite(str(out_comp_dir / name), comp_u8)
+        cv2.imwrite(str(out_target_rgb_dir / name), t_rgb)
+        cv2.imwrite(str(out_target_alpha_dir / name), t_a_u8)
+        cv2.imwrite(str(out_distractor_rgb_dir / name), d_rgb)
+        cv2.imwrite(str(out_distractor_alpha_dir / name), distractor_alpha_masked)
 
 
 def _double_done(clip_out: Path) -> bool:
@@ -278,8 +301,10 @@ def _double_done(clip_out: Path) -> bool:
     return (
         clip_out.is_dir()
         and any(clip_out.glob("input.*"))
-        and any(clip_out.glob("alpha_target.*"))
-        and any(clip_out.glob("alpha_distractor.*"))
+        and (clip_out / "gt_rgb_target.mkv").exists()
+        and (clip_out / "gt_alpha_target.mkv").exists()
+        and (clip_out / "gt_rgb_distractor.mkv").exists()
+        and (clip_out / "gt_alpha_distractor.mkv").exists()
         and (clip_out / "manifest.json").exists()
     )
 
@@ -312,11 +337,13 @@ def preprocess_double(
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        t_moved        = tmp / "t_moved";  t_moved.mkdir()
-        d_moved        = tmp / "d_moved";  d_moved.mkdir()
-        composited_rgb = tmp / "comp_rgb"; composited_rgb.mkdir()
-        composited_t_a = tmp / "comp_at";  composited_t_a.mkdir()
-        composited_d_a = tmp / "comp_ad";  composited_d_a.mkdir()
+        t_moved = tmp / "t_moved"; t_moved.mkdir()
+        d_moved = tmp / "d_moved"; d_moved.mkdir()
+        comp    = tmp / "comp";    comp.mkdir()
+        t_rgb   = tmp / "t_rgb";   t_rgb.mkdir()
+        t_a     = tmp / "t_a";     t_a.mkdir()
+        d_rgb   = tmp / "d_rgb";   d_rgb.mkdir()
+        d_a     = tmp / "d_a";     d_a.mkdir()
 
         _subject_trajectory(clip_target,     t_moved, rng)
         _subject_trajectory(clip_distractor, d_moved, rng)
@@ -328,22 +355,24 @@ def preprocess_double(
         t_place = _sample_placement(t_first.shape[:2], canvas_hw, t_scale, rng)
         d_place = _sample_placement(d_first.shape[:2], canvas_hw, d_scale, rng)
 
-        gs_profile = rng.choice(["clean", "moderate", "messy"], p=[0.25, 0.45, 0.30])
+        gs_profile = str(rng.choice(["clean", "moderate", "messy"], p=[0.25, 0.45, 0.30]))
         gs = generate_green_screen(height=canvas_hw[0], width=canvas_hw[1],
                                    seed=int(rng.integers(0, 2**31)),
-                                   profile=str(gs_profile))
+                                   profile=gs_profile)
 
         _compose_double(
             t_paths, d_paths, gs, canvas_hw,
             t_place, d_place,
-            composited_rgb, composited_t_a, composited_d_a,
+            comp, t_rgb, t_a, d_rgb, d_a,
         )
 
         augment_multi(
-            composited_rgb,
-            [composited_t_a, composited_d_a],
-            clip_out,
-            alpha_labels=["alpha_target", "alpha_distractor"],
+            input_rgb_dir=comp,
+            gt_rgb_dirs=[t_rgb, d_rgb],
+            gt_rgb_labels=["gt_rgb_target", "gt_rgb_distractor"],
+            alpha_dirs=[t_a, d_a],
+            alpha_labels=["gt_alpha_target", "gt_alpha_distractor"],
+            output_dir=clip_out,
             seed=int(rng.integers(0, 2**31)),
             fps=fps,
             skip={"geometric"},

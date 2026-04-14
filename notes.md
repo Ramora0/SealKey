@@ -94,6 +94,13 @@ a fixed spatial size.**
 - Edge quality and temporal stability at high-res is where fully-conv models
   surprise you badly. Catch it early.
 
+### Loss
+Three loss terms:
+- BCE or L1 on alpha
+- L1 on RGB weighted by GT_alpha * (1 - GT_alpha) to only focus on edges
+- Small L1 reg on all deltas
+
+
 ---
 
 ## Loss Design
