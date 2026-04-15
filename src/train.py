@@ -86,15 +86,18 @@ def set_lr(opt: torch.optim.Optimizer, base_lr: float, encoder_lr_mult: float) -
 
 @torch.no_grad()
 def validate(model: SealKeyNet, loader: DataLoader, cfg: TrainConfig,
-             max_samples: int) -> dict[str, float]:
+             max_samples: int) -> tuple[dict[str, float], np.ndarray | None]:
     model.eval()
     by_mode: dict[str, dict[str, list[float]]] = {}
     seen = 0
+    first_panel: np.ndarray | None = None
     pbar = tqdm(total=max_samples, desc="val", leave=False, unit="samp")
     for batch in loader:
         batch = _to_device(batch, cfg.device)
         with torch.autocast(cfg.device, dtype=torch.bfloat16, enabled=cfg.bf16):
             pred = model(batch["rgb"], batch["hint"])
+        if first_panel is None:
+            first_panel = make_panel(batch, pred, n=2)
         for i, mode in enumerate(batch["mode"]):
             d = by_mode.setdefault(mode, {"sad": [], "mse": [], "grad": [], "rgb": []})
             d["sad"].append(sad(pred["alpha_pred"][i, 0], batch["gt_alpha"][i, 0]))
@@ -121,7 +124,7 @@ def validate(model: SealKeyNet, loader: DataLoader, cfg: TrainConfig,
     if out:
         all_sad = [v for k, v in out.items() if k.endswith("/sad")]
         out["val/sad_mean"] = float(np.mean(all_sad))
-    return out
+    return out, first_panel
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +251,11 @@ def main():
             wandb.log({"train/panel": wandb.Image(panel)}, step=step)
 
         if step > 0 and step % cfg.val_every == 0:
-            vmetrics = validate(model, val_loader, cfg, cfg.val_samples)
-            wandb.log({f"val/{k}": v for k, v in vmetrics.items()}, step=step)
+            vmetrics, val_panel = validate(model, val_loader, cfg, cfg.val_samples)
+            log = {f"val/{k}": v for k, v in vmetrics.items()}
+            if val_panel is not None:
+                log["val/panel"] = wandb.Image(val_panel)
+            wandb.log(log, step=step)
             primary = vmetrics.get("val/sad_mean", float("inf"))
             tqdm.write(f"[val @ step {step}] {vmetrics}")
             if primary < best_val:
