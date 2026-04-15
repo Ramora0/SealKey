@@ -57,12 +57,18 @@ def parse_config() -> TrainConfig:
 # Schedule
 # ---------------------------------------------------------------------------
 
-def compute_total_steps(cfg: TrainConfig, n_train_samples: int) -> int:
-    """One epoch ≈ n_train_samples * max_frames_per_clip / batch_size steps."""
+def compute_total_steps(cfg: TrainConfig, n_train_samples: int,
+                        frames_per_clip: float | None = None) -> int:
+    """One epoch ≈ n_train_samples * frames_per_clip / batch_size steps.
+
+    Uses `max_frames_per_clip` as a conservative upper bound when the actual
+    average is unknown; once training has seen enough samples to estimate,
+    pass the observed average via `frames_per_clip` to tighten the estimate.
+    """
+    fpc = frames_per_clip if frames_per_clip is not None else float(cfg.max_frames_per_clip)
     steps_per_epoch = max(
         1,
-        (n_train_samples * cfg.max_frames_per_clip + cfg.batch_size - 1)
-        // cfg.batch_size,
+        int((n_train_samples * fpc + cfg.batch_size - 1) // cfg.batch_size),
     )
     return cfg.epochs * steps_per_epoch
 
@@ -216,12 +222,25 @@ def main():
     step = 0
     it = iter(train_loader)
     pbar = tqdm(total=total_steps, desc="train", unit="step", dynamic_ncols=True)
+    # Rolling frames/clip estimate: weighted mean with w = 1/clip_len gives
+    # the per-clip (not per-frame) average, matching our steps formula.
+    # We update total_steps (and therefore the LR schedule horizon) early,
+    # then freeze once the estimate stabilizes — avoids jerking the cosine
+    # schedule late in training.
+    running_inv_sum = 0.0
+    running_samples = 0
+    est_refresh_every = 200
+    est_freeze_at = 2000
+    est_frozen = False
     while step < total_steps:
         try:
             batch = next(it)
         except StopIteration:
             it = iter(train_loader)
             batch = next(it)
+        clip_lens = batch["clip_len"]  # CPU int32 tensor
+        running_inv_sum += float((1.0 / clip_lens.float()).sum().item())
+        running_samples += int(clip_lens.numel())
         batch = _to_device(batch, cfg.device)
 
         set_lr(opt, lr_at(step, total_steps, cfg), cfg.encoder_lr_mult)
@@ -268,6 +287,21 @@ def main():
 
         step += 1
         pbar.update(1)
+
+        if (not est_frozen and step % est_refresh_every == 0
+                and running_inv_sum > 0):
+            avg_fpc = running_samples / running_inv_sum
+            new_total = compute_total_steps(cfg, len(train_dirs), avg_fpc)
+            if new_total != total_steps:
+                total_steps = new_total
+                pbar.total = new_total
+                pbar.refresh()
+            if step >= est_freeze_at:
+                est_frozen = True
+                tqdm.write(
+                    f"[schedule] frozen: avg_frames/clip≈{avg_fpc:.1f} → "
+                    f"total_steps={total_steps}"
+                )
 
     pbar.close()
     _save_ckpt(cfg.out_dir / "ckpt" / "last.pt", step, model, opt, cfg, {})

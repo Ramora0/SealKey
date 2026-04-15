@@ -274,7 +274,7 @@ class SealKeyDataset(IterableDataset):
             )
 
         hint_u8, hint_name = sample_hint(
-            clip.kind, rgb_u8, gt_a_u8, tgt_a_u8, rng,
+            clip.kind, rgb_u8, gt_rgb_u8, gt_a_u8, rng,
         )
 
         rgb = torch.from_numpy(rgb_u8.astype(np.float32) / 255.0).permute(2, 0, 1)
@@ -285,6 +285,7 @@ class SealKeyDataset(IterableDataset):
         return {
             "rgb": rgb, "hint": hint, "gt_rgb": gt_rgb, "gt_alpha": gt_a,
             "mode": clip.kind, "hint_name": hint_name,
+            "clip_len": int(clip.n),
         }
 
 
@@ -295,4 +296,5 @@ def collate(batch: list[dict]) -> dict:
         out[k] = torch.stack([b[k] for b in batch], dim=0)
     out["mode"] = [b["mode"] for b in batch]
     out["hint_name"] = [b["hint_name"] for b in batch]
+    out["clip_len"] = torch.tensor([b["clip_len"] for b in batch], dtype=torch.int32)
     return out

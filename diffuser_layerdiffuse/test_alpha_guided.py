@@ -13,7 +13,10 @@ Usage:
 """
 
 import argparse
+import os
 from pathlib import Path
+
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 
 import numpy as np
 import torch
@@ -67,17 +70,16 @@ def encode_prompt_sdxl(pipeline, prompt: str, negative_prompt: str, device):
 
 def decode_alpha_only(vae: TransparentVAEDecoder, latents: torch.Tensor) -> torch.Tensor:
     """
-    Differentiable-ish alpha decode. Mirrors TransparentVAEDecoder.decode but only
-    runs a single (non-augmented) pass to keep gradients tractable.
+    Differentiable alpha decode in fp32 (fp16 NaNs through the transparent decoder).
     Returns alpha in [0,1] shape [B,1,H,W].
     """
-    z = latents / vae.config.scaling_factor
+    latents32 = latents.float()
+    z = latents32 / vae.config.scaling_factor
     pixel = vae.decoder(vae.post_quant_conv(z))
     pixel = pixel / 2 + 0.5
-    y = vae.transparent_decoder(pixel, z)  # [B,4,H,W] : alpha + fg
+    y = vae.transparent_decoder(pixel, z)
     y = y.clamp(0, 1)
-    alpha = y[:, :1]
-    return alpha
+    return y[:, :1]
 
 
 def main():
@@ -103,8 +105,19 @@ def main():
                     help="Gaussian blur sigma applied to the target alpha (softens hard edges).")
     args = ap.parse_args()
 
-    device = "cuda"
-    dtype = torch.float16
+    if torch.cuda.is_available():
+        device = "cuda"
+        dtype = torch.float16
+        variant = "fp16"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+        dtype = torch.float16
+        variant = "fp16"
+    else:
+        device = "cpu"
+        dtype = torch.float32
+        variant = None
+    print(f"Device: {device}, dtype: {dtype}")
 
     print("Loading transparent VAE...")
     transparent_vae = TransparentVAEDecoder.from_pretrained(
@@ -121,7 +134,7 @@ def main():
         "stabilityai/stable-diffusion-xl-base-1.0",
         vae=transparent_vae,
         torch_dtype=dtype,
-        variant="fp16",
+        variant=variant,
         use_safetensors=True,
         add_watermarker=False,
     ).to(device)
@@ -130,6 +143,13 @@ def main():
         weight_name="diffuser_layer_xl_transparent_attn.safetensors",
     )
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+
+    transparent_vae.to(dtype=torch.float32)
+
+    pipeline.enable_attention_slicing("max")
+    pipeline.enable_vae_slicing()
+    pipeline.enable_vae_tiling()
+    pipeline.unet.enable_gradient_checkpointing()
 
     unet = pipeline.unet
     scheduler = pipeline.scheduler
@@ -146,7 +166,8 @@ def main():
 
     seed = args.seed if args.seed is not None else torch.randint(0, 1_000_000, (1,)).item()
     print(f"Seed: {seed}")
-    generator = torch.Generator(device=device).manual_seed(seed)
+    gen_device = "cpu" if device == "mps" else device
+    generator = torch.Generator(device=gen_device).manual_seed(seed)
 
     print("Encoding prompt...")
     (
@@ -155,6 +176,11 @@ def main():
         pooled_prompt_embeds,
         negative_pooled_prompt_embeds,
     ) = encode_prompt_sdxl(pipeline, args.prompt, args.negative_prompt, device)
+
+    pipeline.text_encoder.to("cpu")
+    pipeline.text_encoder_2.to("cpu")
+    if device == "mps":
+        torch.mps.empty_cache()
 
     prompt_embeds_cfg = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
     pooled_cfg = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
@@ -175,8 +201,8 @@ def main():
     latent_h = args.height // 8
     latent_w = args.width // 8
     latents = torch.randn(
-        (1, 4, latent_h, latent_w), generator=generator, device=device, dtype=dtype
-    )
+        (1, 4, latent_h, latent_w), generator=generator, dtype=dtype
+    ).to(device)
     latents = latents * scheduler.init_noise_sigma
 
     print(f"Sampling {args.steps} steps with alpha guidance...")
@@ -224,10 +250,12 @@ def main():
 
         with torch.no_grad():
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+        if device == "mps":
+            torch.mps.empty_cache()
 
     print("Final decode (full augmented transparent decoder)...")
     with torch.no_grad():
-        latents = latents.to(dtype)
+        latents = latents.float()
         decoded = transparent_vae.decode(latents / transparent_vae.config.scaling_factor, return_dict=False)[0]
         decoded = (decoded / 2 + 0.5).clamp(0, 1)
         rgba = decoded[0].permute(1, 2, 0).cpu().float().numpy()
