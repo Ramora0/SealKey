@@ -172,6 +172,28 @@ def render(rgba: np.ndarray, style: int, path: Path, idx: int, total: int,
     ])
 
 
+def render_confirm(rgba: np.ndarray, style: int, path: Path) -> np.ndarray:
+    """Side-by-side comparison: original (left) vs fixed (right) on the bg."""
+    fixed = fix_rgba(rgba)
+    h, w = rgba.shape[:2]
+    bg = make_background(h, w, style)
+    left = composite(rgba, bg)
+    right = composite(fixed, bg)
+    gap = np.full((h, 8, 3), 255, dtype=np.uint8)
+    panel = np.concatenate([left, gap, right], axis=1)
+    panel_bgr = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)
+    # label columns
+    cv2.putText(panel_bgr, "ORIGINAL", (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(panel_bgr, "ORIGINAL", (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+    return annotate(panel_bgr, [
+        f"CONFIRM FIX — {path.name}",
+        "y / enter = apply to whole video   any other key = cancel",
+        "r = resample a different frame first",
+    ])
+
+
 def encode_rgba_webm(frames: list[np.ndarray], fps: float, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     h, w = frames[0].shape[:2]
@@ -276,15 +298,32 @@ def main() -> None:
             preview = False
             rgba = decode_frame(videos[idx], None)
         elif key == ord("a"):
-            print(f"[fix] decoding {path.name} ...")
-            frames, fps = decode_all(path)
-            print(f"[fix] filling holes across {len(frames)} frames ...")
-            fixed = [fix_rgba(f) for f in frames]
-            out_path = fixed_dir / (path.stem + ".webm")
-            print(f"[fix] encoding -> {out_path}")
-            encode_rgba_webm(fixed, fps, out_path)
-            verdicts[str(path)] = f"fixed -> {out_path}"
-            advance()
+            confirmed = False
+            while True:
+                cimg = render_confirm(rgba, style, path)
+                if cimg.shape[1] > args.max_width:
+                    scale = args.max_width / cimg.shape[1]
+                    cimg = cv2.resize(cimg, (args.max_width, int(cimg.shape[0] * scale)),
+                                      interpolation=cv2.INTER_AREA)
+                cv2.imshow(win, cimg)
+                ckey = cv2.waitKey(0) & 0xFF
+                if ckey == ord("r"):
+                    rgba = decode_frame(path, None)
+                    continue
+                confirmed = ckey in (ord("y"), 13, 10)
+                break
+            if not confirmed:
+                print("[fix] cancelled")
+            else:
+                print(f"[fix] decoding {path.name} ...")
+                frames, fps = decode_all(path)
+                print(f"[fix] filling holes across {len(frames)} frames ...")
+                fixed = [fix_rgba(f) for f in frames]
+                out_path = fixed_dir / (path.stem + ".webm")
+                print(f"[fix] encoding -> {out_path}")
+                encode_rgba_webm(fixed, fps, out_path)
+                verdicts[str(path)] = f"fixed -> {out_path}"
+                advance()
 
         if not videos:
             break
