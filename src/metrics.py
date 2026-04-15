@@ -8,7 +8,7 @@ from scipy.ndimage import sobel
 
 def _to_np(x) -> np.ndarray:
     if hasattr(x, "detach"):
-        x = x.detach().cpu().numpy()
+        x = x.detach().float().cpu().numpy()
     return np.asarray(x, dtype=np.float32)
 
 
