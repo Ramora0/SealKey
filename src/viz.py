@@ -19,7 +19,7 @@ def _checkerboard(h: int, w: int, square: int = 16) -> np.ndarray:
 
 def _to_np_img(t: torch.Tensor) -> np.ndarray:
     # (C,H,W) [0,1] → (H,W,C) uint8.
-    arr = t.detach().cpu().clamp(0, 1).numpy()
+    arr = t.detach().float().cpu().clamp(0, 1).numpy()
     if arr.ndim == 3 and arr.shape[0] in (1, 3):
         arr = np.transpose(arr, (1, 2, 0))
     if arr.ndim == 3 and arr.shape[2] == 1:

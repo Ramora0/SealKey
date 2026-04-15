@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import wandb
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from src.configs import TrainConfig
 from src.dataset import SealKeyDataset, build_splits, collate
@@ -79,6 +80,7 @@ def validate(model: SealKeyNet, loader: DataLoader, cfg: TrainConfig,
     model.eval()
     by_mode: dict[str, dict[str, list[float]]] = {}
     seen = 0
+    pbar = tqdm(total=max_samples, desc="val", leave=False, unit="samp")
     for batch in loader:
         batch = _to_device(batch, cfg.device)
         with torch.autocast(cfg.device, dtype=torch.bfloat16, enabled=cfg.bf16):
@@ -92,9 +94,12 @@ def validate(model: SealKeyNet, loader: DataLoader, cfg: TrainConfig,
                 pred["rgb_pred"][i:i + 1], batch["gt_rgb"][i:i + 1],
                 batch["gt_alpha"][i:i + 1],
             ))
-        seen += batch["rgb"].shape[0]
+        bs = batch["rgb"].shape[0]
+        seen += bs
+        pbar.update(bs)
         if seen >= max_samples:
             break
+    pbar.close()
     model.train()
 
     out: dict[str, float] = {}
@@ -192,6 +197,7 @@ def main():
     model.train()
     step = 0
     it = iter(train_loader)
+    pbar = tqdm(total=cfg.total_steps, desc="train", unit="step", dynamic_ncols=True)
     while step < cfg.total_steps:
         try:
             batch = next(it)
@@ -212,11 +218,12 @@ def main():
         opt.step()
 
         if step % 20 == 0:
-            dt = time.time() - t0
-            it_per_s = (step + 1) / max(dt, 1e-6)
-            print(f"step {step:>7d}  loss {parts['loss'].item():.4f}  "
-                  f"α {parts['l_alpha'].item():.4f}  rgb {parts['l_rgb'].item():.4f}  "
-                  f"δ {parts['l_delta'].item():.4f}  {it_per_s:.2f} it/s")
+            pbar.set_postfix(
+                loss=f"{parts['loss'].item():.4f}",
+                α=f"{parts['l_alpha'].item():.4f}",
+                rgb=f"{parts['l_rgb'].item():.4f}",
+                δ=f"{parts['l_delta'].item():.4f}",
+            )
             log = {f"train/{k}": v.item() for k, v in parts.items()}
             log["train/lr"] = opt.param_groups[1]["lr"]
             wandb.log(log, step=step)
@@ -229,7 +236,7 @@ def main():
             vmetrics = validate(model, val_loader, cfg, cfg.val_samples)
             wandb.log({f"val/{k}": v for k, v in vmetrics.items()}, step=step)
             primary = vmetrics.get("val/sad_mean", float("inf"))
-            print(f"  [val] {vmetrics}")
+            tqdm.write(f"[val @ step {step}] {vmetrics}")
             if primary < best_val:
                 best_val = primary
                 _save_ckpt(cfg.out_dir / "ckpt" / "best.pt", step, model, opt, cfg,
@@ -239,7 +246,9 @@ def main():
             _save_ckpt(cfg.out_dir / "ckpt" / "last.pt", step, model, opt, cfg, {})
 
         step += 1
+        pbar.update(1)
 
+    pbar.close()
     _save_ckpt(cfg.out_dir / "ckpt" / "last.pt", step, model, opt, cfg, {})
     wandb.finish()
     print("done.")
