@@ -57,10 +57,20 @@ def parse_config() -> TrainConfig:
 # Schedule
 # ---------------------------------------------------------------------------
 
-def lr_at(step: int, cfg: TrainConfig) -> float:
+def compute_total_steps(cfg: TrainConfig, n_train_samples: int) -> int:
+    """One epoch ≈ n_train_samples * max_frames_per_clip / batch_size steps."""
+    steps_per_epoch = max(
+        1,
+        (n_train_samples * cfg.max_frames_per_clip + cfg.batch_size - 1)
+        // cfg.batch_size,
+    )
+    return cfg.epochs * steps_per_epoch
+
+
+def lr_at(step: int, total_steps: int, cfg: TrainConfig) -> float:
     if step < cfg.warmup_steps:
         return cfg.lr * (step + 1) / max(1, cfg.warmup_steps)
-    t = (step - cfg.warmup_steps) / max(1, cfg.total_steps - cfg.warmup_steps)
+    t = (step - cfg.warmup_steps) / max(1, total_steps - cfg.warmup_steps)
     t = min(1.0, max(0.0, t))
     return cfg.lr * 0.5 * (1 + math.cos(math.pi * t))
 
@@ -155,6 +165,11 @@ def main():
     if not train_dirs:
         raise SystemExit(f"No samples under {cfg.data_root}")
 
+    total_steps = compute_total_steps(cfg, len(train_dirs))
+    steps_per_epoch = total_steps // cfg.epochs
+    print(f"schedule: {cfg.epochs} epochs × {steps_per_epoch} steps/epoch "
+          f"= {total_steps} total steps (batch_size={cfg.batch_size})")
+
     train_ds = SealKeyDataset(
         train_dirs, crop_hw=(cfg.crop_h, cfg.crop_w),
         scale_range=(cfg.scale_min, cfg.scale_max),
@@ -197,8 +212,8 @@ def main():
     model.train()
     step = 0
     it = iter(train_loader)
-    pbar = tqdm(total=cfg.total_steps, desc="train", unit="step", dynamic_ncols=True)
-    while step < cfg.total_steps:
+    pbar = tqdm(total=total_steps, desc="train", unit="step", dynamic_ncols=True)
+    while step < total_steps:
         try:
             batch = next(it)
         except StopIteration:
@@ -206,7 +221,7 @@ def main():
             batch = next(it)
         batch = _to_device(batch, cfg.device)
 
-        set_lr(opt, lr_at(step, cfg), cfg.encoder_lr_mult)
+        set_lr(opt, lr_at(step, total_steps, cfg), cfg.encoder_lr_mult)
 
         with torch.autocast(cfg.device, dtype=torch.bfloat16, enabled=cfg.bf16):
             pred = model(batch["rgb"], batch["hint"])

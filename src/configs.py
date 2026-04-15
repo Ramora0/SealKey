@@ -22,7 +22,7 @@ class TrainConfig:
     max_frames_per_clip: int = 96  # cap decoded frames per clip (memory)
 
     # Dataloader
-    batch_size: int = 8
+    batch_size: int = 16
     num_workers: int = 8
     k_clips: int = 4
 
@@ -35,7 +35,11 @@ class TrainConfig:
     grad_clip: float = 1.0
 
     # Schedule
-    total_steps: int = 200_000
+    # One epoch ≈ one pass through all training sample dirs, assuming each
+    # contributes max_frames_per_clip frames (upper bound; short clips end
+    # their pass sooner, dataset reshuffles and continues). Total steps are
+    # computed from epochs at runtime — see train.py:compute_total_steps.
+    epochs: int = 10
     warmup_steps: int = 1_000
 
     # Losses
