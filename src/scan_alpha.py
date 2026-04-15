@@ -81,14 +81,19 @@ def load_all_frames(clip: Path) -> tuple[list[str], list[np.ndarray]]:
     return names, [_read_png(clip, n) for n in names]
 
 
-def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200, edge_dilate: int = 6) -> np.ndarray:
-    """Set interior sub-opaque pixels to 255, leaving the natural edge alone.
+def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200,
+                        edge_dilate: int = 6, keep_pct: int = 20,
+                        near_zero: int = 10) -> np.ndarray:
+    """Fill noisy interior holes while preserving real intentional ones.
 
-    Flood from the image border through every pixel with alpha < flood_thresh.
-    The outer soft edge is a connected low-alpha band anchored at the truly-
-    transparent background, so the flood sweeps it. Then dilate the flooded
-    region by `edge_dilate` pixels to give the edge a safety margin. Any sub-
-    flood_thresh pixel outside that margin is an interior hole → set to 255.
+    1. Flood from the image border through every pixel with alpha < flood_thresh
+       (sweeps the natural soft edge since it's anchored at true background).
+    2. Dilate the flooded region by `edge_dilate` px as a safety margin.
+    3. Whatever remains outside that margin and under flood_thresh is a
+       candidate hole. Split into connected components.
+    4. For each component, compute the % of its pixels with alpha < near_zero.
+         - % >= keep_pct   -> real hole (subject is genuinely transparent here), skip.
+         - % <  keep_pct   -> semi-transparent noise, bump to 255.
     """
     h, w = alpha.shape
     floodable = (alpha < flood_thresh).astype(np.uint8)
@@ -110,15 +115,29 @@ def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200, edge_dilate:
         k = 2 * edge_dilate + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         protected = cv2.dilate(protected, kernel)
-    holes = (~protected.astype(bool)) & (alpha < 255)
+
+    candidates = ((canvas == 1) & (~protected.astype(bool))).astype(np.uint8)
+    num, labels = cv2.connectedComponents(candidates, connectivity=4)
     out = alpha.copy()
-    out[holes] = 255
+    for comp in range(1, num):
+        comp_mask = labels == comp
+        n = int(comp_mask.sum())
+        if n == 0:
+            continue
+        n_empty = int((alpha[comp_mask] < near_zero).sum())
+        pct = 100.0 * n_empty / n
+        if pct >= keep_pct:
+            continue
+        fill = comp_mask & (alpha < 255)
+        out[fill] = 255
     return out
 
 
-def fix_rgba(rgba: np.ndarray, flood_thresh: int = 200, edge_dilate: int = 6) -> np.ndarray:
+def fix_rgba(rgba: np.ndarray, flood_thresh: int = 200, edge_dilate: int = 6,
+             keep_pct: int = 20) -> np.ndarray:
     fixed = rgba.copy()
-    fixed[..., 3] = fill_internal_holes(rgba[..., 3], flood_thresh=flood_thresh, edge_dilate=edge_dilate)
+    fixed[..., 3] = fill_internal_holes(rgba[..., 3], flood_thresh=flood_thresh,
+                                        edge_dilate=edge_dilate, keep_pct=keep_pct)
     return fixed
 
 
@@ -154,8 +173,9 @@ def annotate(img: np.ndarray, lines: list[str]) -> np.ndarray:
 
 
 def render(rgba: np.ndarray, style: int, clip: Path, idx: int, total: int,
-           status: str, preview_fix: bool, flood_thresh: int, edge_dilate: int) -> np.ndarray:
-    shown = fix_rgba(rgba, flood_thresh, edge_dilate) if preview_fix else rgba
+           status: str, preview_fix: bool, flood_thresh: int, edge_dilate: int,
+           keep_pct: int) -> np.ndarray:
+    shown = fix_rgba(rgba, flood_thresh, edge_dilate, keep_pct) if preview_fix else rgba
     h, w = shown.shape[:2]
     bg = make_background(h, w, style)
     rgb_opaque = shown[..., :3]
@@ -166,13 +186,14 @@ def render(rgba: np.ndarray, style: int, clip: Path, idx: int, total: int,
     panel_bgr = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)
     return annotate(panel_bgr, [
         f"[{idx + 1}/{total}] {clip.name}",
-        f"status: {status}   bg: {style % 3}   preview: {'on' if preview_fix else 'off'}   flood<{flood_thresh}  dilate={edge_dilate}",
+        f"status: {status}  bg:{style % 3}  preview:{'on' if preview_fix else 'off'}  flood<{flood_thresh}  dilate={edge_dilate}  keep>={keep_pct}%",
         "n=next p=prev r=resample s=bg f=preview-fix k=keep t=throw a=apply-fix q=quit",
     ])
 
 
-def render_confirm(rgba: np.ndarray, style: int, clip: Path, flood_thresh: int, edge_dilate: int) -> np.ndarray:
-    fixed = fix_rgba(rgba, flood_thresh, edge_dilate)
+def render_confirm(rgba: np.ndarray, style: int, clip: Path, flood_thresh: int,
+                   edge_dilate: int, keep_pct: int) -> np.ndarray:
+    fixed = fix_rgba(rgba, flood_thresh, edge_dilate, keep_pct)
     h, w = rgba.shape[:2]
     bg = make_background(h, w, style)
     left = composite(rgba, bg)
@@ -185,7 +206,7 @@ def render_confirm(rgba: np.ndarray, style: int, clip: Path, flood_thresh: int, 
     cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
     return annotate(panel_bgr, [
-        f"CONFIRM FIX — {clip.name}   flood<{flood_thresh}  dilate={edge_dilate}",
+        f"CONFIRM FIX — {clip.name}   flood<{flood_thresh}  dilate={edge_dilate}  keep>={keep_pct}%",
         "y / enter = apply to whole clip   any other key = cancel",
         "r = resample a different frame first   (sliders update live)",
     ])
@@ -246,11 +267,17 @@ def main() -> None:
         "mode": "scan",  # "scan" or "confirm"
         "flood_thresh": 200,
         "edge_dilate": 6,
+        "keep_pct": 20,
     }
     rgba = load_random_frame(clips[state["idx"]])
 
     win = "alpha-scan"
+    ctrl_win = "controls  (flood< / dilate / keep%)"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(ctrl_win, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(ctrl_win, 700, 140)
+    # tiny placeholder so the controls window has drawable area
+    cv2.imshow(ctrl_win, np.full((1, 700, 3), 40, dtype=np.uint8))
 
     def _fit(img: np.ndarray) -> np.ndarray:
         if img.shape[1] > args.max_width:
@@ -263,12 +290,14 @@ def main() -> None:
         clip = clips[state["idx"]]
         if state["mode"] == "confirm":
             img = render_confirm(rgba, state["style"], clip,
-                                 state["flood_thresh"], state["edge_dilate"])
+                                 state["flood_thresh"], state["edge_dilate"],
+                                 state["keep_pct"])
         else:
             img = render(rgba, state["style"], clip, state["idx"], len(clips),
                          verdicts.get(str(clip), "unrated"),
                          state["preview"] or state["mode"] == "confirm",
-                         state["flood_thresh"], state["edge_dilate"])
+                         state["flood_thresh"], state["edge_dilate"],
+                         state["keep_pct"])
         cv2.imshow(win, _fit(img))
 
     def _on_flood(v: int) -> None:
@@ -279,8 +308,13 @@ def main() -> None:
         state["edge_dilate"] = v
         redraw()
 
-    cv2.createTrackbar("flood<", win, state["flood_thresh"], 255, _on_flood)
-    cv2.createTrackbar("dilate", win, state["edge_dilate"], 30, _on_dilate)
+    def _on_keep(v: int) -> None:
+        state["keep_pct"] = v
+        redraw()
+
+    cv2.createTrackbar("flood<", ctrl_win, state["flood_thresh"], 255, _on_flood)
+    cv2.createTrackbar("dilate", ctrl_win, state["edge_dilate"], 30,  _on_dilate)
+    cv2.createTrackbar("keep%",  ctrl_win, state["keep_pct"],    100, _on_keep)
 
     def advance() -> None:
         nonlocal rgba
@@ -289,69 +323,91 @@ def main() -> None:
         state["mode"] = "scan"
         rgba = load_random_frame(clips[state["idx"]])
 
-    redraw()
-    while True:
-        key = cv2.waitKey(0) & 0xFF
-        clip = clips[state["idx"]]
+    def wait_key() -> int:
+        """Poll for a key so ^C and window-close events are handled promptly."""
+        while True:
+            k = cv2.waitKey(30)
+            if k != -1:
+                return k & 0xFF
+            try:
+                if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                    return ord("q")
+            except cv2.error:
+                return ord("q")
 
-        if key in (ord("q"), 27):
-            break
-        elif key in (ord("n"), ord(" "), 83):
-            advance()
-        elif key in (ord("p"), 81):
-            state["idx"] = (state["idx"] - 1) % len(clips)
-            state["preview"] = False
-            rgba = load_random_frame(clips[state["idx"]])
-        elif key == ord("r"):
-            rgba = load_random_frame(clip)
-        elif key == ord("s"):
-            state["style"] += 1
-        elif key == ord("f"):
-            state["preview"] = not state["preview"]
-        elif key == ord("k"):
-            verdicts[str(clip)] = "keep"
-            advance()
-        elif key == ord("t"):
-            rejected_dir.mkdir(parents=True, exist_ok=True)
-            dest = rejected_dir / clip.name
-            shutil.move(str(clip), str(dest))
-            verdicts[str(clip)] = f"thrown -> {dest}"
-            clips.pop(state["idx"])
+    redraw()
+    try:
+        while True:
+            key = wait_key()
+            clip = clips[state["idx"]]
+
+            if key in (ord("q"), 27):
+                break
+            elif key in (ord("n"), ord(" "), 83):
+                advance()
+            elif key in (ord("p"), 81):
+                state["idx"] = (state["idx"] - 1) % len(clips)
+                state["preview"] = False
+                rgba = load_random_frame(clips[state["idx"]])
+            elif key == ord("r"):
+                rgba = load_random_frame(clip)
+            elif key == ord("s"):
+                state["style"] += 1
+            elif key == ord("f"):
+                state["preview"] = not state["preview"]
+            elif key == ord("k"):
+                verdicts[str(clip)] = "keep"
+                advance()
+            elif key == ord("t"):
+                rejected_dir.mkdir(parents=True, exist_ok=True)
+                dest = rejected_dir / clip.name
+                shutil.move(str(clip), str(dest))
+                verdicts[str(clip)] = f"thrown -> {dest}"
+                clips.pop(state["idx"])
+                if not clips:
+                    break
+                state["idx"] %= len(clips)
+                state["preview"] = False
+                rgba = load_random_frame(clips[state["idx"]])
+            elif key == ord("a"):
+                state["mode"] = "confirm"
+                confirmed = False
+                while True:
+                    redraw()
+                    ckey = wait_key()
+                    if ckey == ord("r"):
+                        rgba = load_random_frame(clip)
+                        continue
+                    if ckey in (ord("q"), 27):
+                        state["mode"] = "scan"
+                        raise KeyboardInterrupt
+                    confirmed = ckey in (ord("y"), 13, 10)
+                    break
+                state["mode"] = "scan"
+                if not confirmed:
+                    print("[fix] cancelled")
+                else:
+                    print(f"[fix] loading {clip.name} ...")
+                    names, frames = load_all_frames(clip)
+                    print(f"[fix] filling holes across {len(frames)} frames "
+                          f"(flood<{state['flood_thresh']}, dilate={state['edge_dilate']}, "
+                          f"keep%>={state['keep_pct']}) ...")
+                    fixed = [fix_rgba(f, state["flood_thresh"], state["edge_dilate"],
+                                      state["keep_pct"]) for f in frames]
+                    out_path = write_fixed_clip(clip, names, fixed, fixed_dir)
+                    print(f"[fix] wrote -> {out_path}")
+                    verdicts[str(clip)] = f"fixed -> {out_path}"
+                    advance()
+
             if not clips:
                 break
-            state["idx"] %= len(clips)
-            state["preview"] = False
-            rgba = load_random_frame(clips[state["idx"]])
-        elif key == ord("a"):
-            state["mode"] = "confirm"
-            confirmed = False
-            while True:
-                redraw()
-                ckey = cv2.waitKey(0) & 0xFF
-                if ckey == ord("r"):
-                    rgba = load_random_frame(clip)
-                    continue
-                confirmed = ckey in (ord("y"), 13, 10)
-                break
-            state["mode"] = "scan"
-            if not confirmed:
-                print("[fix] cancelled")
-            else:
-                print(f"[fix] loading {clip.name} ...")
-                names, frames = load_all_frames(clip)
-                print(f"[fix] filling holes across {len(frames)} frames "
-                      f"(flood<{state['flood_thresh']}, dilate={state['edge_dilate']}) ...")
-                fixed = [fix_rgba(f, state["flood_thresh"], state["edge_dilate"]) for f in frames]
-                out_path = write_fixed_clip(clip, names, fixed, fixed_dir)
-                print(f"[fix] wrote -> {out_path}")
-                verdicts[str(clip)] = f"fixed -> {out_path}"
-                advance()
-
-        if not clips:
-            break
-        redraw()
+            redraw()
+    except KeyboardInterrupt:
+        print("\ninterrupted")
 
     cv2.destroyAllWindows()
+    for _ in range(4):
+        cv2.waitKey(1)
     if verdicts:
         args.results.write_text("\n".join(f"{v}\t{p}" for p, v in verdicts.items()) + "\n")
         n_keep = sum(1 for v in verdicts.values() if v == "keep")

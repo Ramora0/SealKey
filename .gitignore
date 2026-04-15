@@ -4,3 +4,6 @@ output/
 venv/
 wan_alpha_workspace/
 *.egg-info/
+data/*
+!data/prompts.txt
+out/
