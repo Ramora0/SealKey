@@ -216,8 +216,10 @@ def encode_rgba_webm(frames: list[np.ndarray], fps: float, out_path: Path) -> No
 
 
 def main() -> None:
+    default_dir = Path("/fs/scratch/PAS2836/lees_stuff/sealkey_wan_alpha")
     ap = argparse.ArgumentParser()
-    ap.add_argument("directory", type=Path)
+    ap.add_argument("directory", type=Path, nargs="?", default=default_dir,
+                    help=f"Folder of videos to scan (default: {default_dir})")
     ap.add_argument("--results", type=Path, default=Path("scan_results.txt"))
     ap.add_argument("--rejected-dir", type=Path, default=None,
                     help="Where to move thrown-out videos (default: <directory>/rejected)")
