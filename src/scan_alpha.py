@@ -82,18 +82,18 @@ def load_all_frames(clip: Path) -> tuple[list[str], list[np.ndarray]]:
 
 
 def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200,
-                        edge_dilate: int = 6, keep_pct: int = 20,
-                        near_zero: int = 10) -> np.ndarray:
-    """Fill noisy interior holes while preserving real intentional ones.
+                        edge_dilate: int = 6, round_from: int = 150) -> np.ndarray:
+    """Round near-opaque interior pixels up to 255 while preserving real holes.
 
     1. Flood from the image border through every pixel with alpha < flood_thresh
        (sweeps the natural soft edge since it's anchored at true background).
     2. Dilate the flooded region by `edge_dilate` px as a safety margin.
-    3. Whatever remains outside that margin and under flood_thresh is a
-       candidate hole. Split into connected components.
-    4. For each component, compute the % of its pixels with alpha < near_zero.
-         - % >= keep_pct   -> real hole (subject is genuinely transparent here), skip.
-         - % <  keep_pct   -> semi-transparent noise, bump to 255.
+    3. Whatever remains outside that margin and under flood_thresh is an
+       interior candidate region (walled off from the outside).
+    4. Within candidates, any pixel with alpha >= round_from is bumped to 255.
+       Pixels with alpha < round_from are left alone — so a real intentional
+       hole (alpha≈0 in its center) survives, while semi-transparent noise
+       (alpha in the high 100s) gets snapped to fully opaque.
     """
     h, w = alpha.shape
     floodable = (alpha < flood_thresh).astype(np.uint8)
@@ -116,28 +116,18 @@ def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200,
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         protected = cv2.dilate(protected, kernel)
 
-    candidates = ((canvas == 1) & (~protected.astype(bool))).astype(np.uint8)
-    num, labels = cv2.connectedComponents(candidates, connectivity=4)
+    candidates = (canvas == 1) & (~protected.astype(bool))
+    round_up = candidates & (alpha >= round_from) & (alpha < 255)
     out = alpha.copy()
-    for comp in range(1, num):
-        comp_mask = labels == comp
-        n = int(comp_mask.sum())
-        if n == 0:
-            continue
-        n_empty = int((alpha[comp_mask] < near_zero).sum())
-        pct = 100.0 * n_empty / n
-        if pct >= keep_pct:
-            continue
-        fill = comp_mask & (alpha < 255)
-        out[fill] = 255
+    out[round_up] = 255
     return out
 
 
 def fix_rgba(rgba: np.ndarray, flood_thresh: int = 200, edge_dilate: int = 6,
-             keep_pct: int = 20) -> np.ndarray:
+             round_from: int = 150) -> np.ndarray:
     fixed = rgba.copy()
     fixed[..., 3] = fill_internal_holes(rgba[..., 3], flood_thresh=flood_thresh,
-                                        edge_dilate=edge_dilate, keep_pct=keep_pct)
+                                        edge_dilate=edge_dilate, round_from=round_from)
     return fixed
 
 
@@ -174,8 +164,8 @@ def annotate(img: np.ndarray, lines: list[str]) -> np.ndarray:
 
 def render(rgba: np.ndarray, style: int, clip: Path, idx: int, total: int,
            status: str, preview_fix: bool, flood_thresh: int, edge_dilate: int,
-           keep_pct: int) -> np.ndarray:
-    shown = fix_rgba(rgba, flood_thresh, edge_dilate, keep_pct) if preview_fix else rgba
+           round_from: int) -> np.ndarray:
+    shown = fix_rgba(rgba, flood_thresh, edge_dilate, round_from) if preview_fix else rgba
     h, w = shown.shape[:2]
     bg = make_background(h, w, style)
     rgb_opaque = shown[..., :3]
@@ -186,14 +176,14 @@ def render(rgba: np.ndarray, style: int, clip: Path, idx: int, total: int,
     panel_bgr = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)
     return annotate(panel_bgr, [
         f"[{idx + 1}/{total}] {clip.name}",
-        f"status: {status}  bg:{style % 3}  preview:{'on' if preview_fix else 'off'}  flood<{flood_thresh}  dilate={edge_dilate}  keep>={keep_pct}%",
+        f"status: {status}  bg:{style % 3}  preview:{'on' if preview_fix else 'off'}  flood<{flood_thresh}  dilate={edge_dilate}  round>={round_from}",
         "n=next p=prev r=resample s=bg f=preview-fix k=keep t=throw a=apply-fix q=quit",
     ])
 
 
 def render_confirm(rgba: np.ndarray, style: int, clip: Path, flood_thresh: int,
-                   edge_dilate: int, keep_pct: int) -> np.ndarray:
-    fixed = fix_rgba(rgba, flood_thresh, edge_dilate, keep_pct)
+                   edge_dilate: int, round_from: int) -> np.ndarray:
+    fixed = fix_rgba(rgba, flood_thresh, edge_dilate, round_from)
     h, w = rgba.shape[:2]
     bg = make_background(h, w, style)
     left = composite(rgba, bg)
@@ -206,7 +196,7 @@ def render_confirm(rgba: np.ndarray, style: int, clip: Path, flood_thresh: int,
     cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
     return annotate(panel_bgr, [
-        f"CONFIRM FIX — {clip.name}   flood<{flood_thresh}  dilate={edge_dilate}  keep>={keep_pct}%",
+        f"CONFIRM FIX — {clip.name}   flood<{flood_thresh}  dilate={edge_dilate}  round>={round_from}",
         "y / enter = apply to whole clip   any other key = cancel",
         "r = resample a different frame first   (sliders update live)",
     ])
@@ -267,7 +257,7 @@ def main() -> None:
         "mode": "scan",  # "scan" or "confirm"
         "flood_thresh": 200,
         "edge_dilate": 6,
-        "keep_pct": 20,
+        "round_from": 150,
     }
     rgba = load_random_frame(clips[state["idx"]])
 
@@ -291,13 +281,13 @@ def main() -> None:
         if state["mode"] == "confirm":
             img = render_confirm(rgba, state["style"], clip,
                                  state["flood_thresh"], state["edge_dilate"],
-                                 state["keep_pct"])
+                                 state["round_from"])
         else:
             img = render(rgba, state["style"], clip, state["idx"], len(clips),
                          verdicts.get(str(clip), "unrated"),
                          state["preview"] or state["mode"] == "confirm",
                          state["flood_thresh"], state["edge_dilate"],
-                         state["keep_pct"])
+                         state["round_from"])
         cv2.imshow(win, _fit(img))
 
     def _on_flood(v: int) -> None:
@@ -309,12 +299,12 @@ def main() -> None:
         redraw()
 
     def _on_keep(v: int) -> None:
-        state["keep_pct"] = v
+        state["round_from"] = v
         redraw()
 
     cv2.createTrackbar("flood<", ctrl_win, state["flood_thresh"], 255, _on_flood)
     cv2.createTrackbar("dilate", ctrl_win, state["edge_dilate"], 30,  _on_dilate)
-    cv2.createTrackbar("keep%",  ctrl_win, state["keep_pct"],    100, _on_keep)
+    cv2.createTrackbar("round>=", ctrl_win, state["round_from"], 254, _on_keep)
 
     def advance() -> None:
         nonlocal rgba
@@ -391,9 +381,9 @@ def main() -> None:
                     names, frames = load_all_frames(clip)
                     print(f"[fix] filling holes across {len(frames)} frames "
                           f"(flood<{state['flood_thresh']}, dilate={state['edge_dilate']}, "
-                          f"keep%>={state['keep_pct']}) ...")
+                          f"round>={state['round_from']}) ...")
                     fixed = [fix_rgba(f, state["flood_thresh"], state["edge_dilate"],
-                                      state["keep_pct"]) for f in frames]
+                                      state["round_from"]) for f in frames]
                     out_path = write_fixed_clip(clip, names, fixed, fixed_dir)
                     print(f"[fix] wrote -> {out_path}")
                     verdicts[str(clip)] = f"fixed -> {out_path}"
