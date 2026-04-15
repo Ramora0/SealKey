@@ -22,7 +22,7 @@ import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
 from src.hint_sampling import sample_hint
-from src.video_io import decode_rgb_video, decode_rgba_ffv1, find_input_file
+from src.video_io import decode_gt_pair, decode_rgb_video, find_input_file
 
 
 # ---------------------------------------------------------------------------
@@ -33,16 +33,51 @@ def _deterministic_hash(s: str) -> int:
     return int.from_bytes(hashlib.sha1(s.encode()).digest()[:4], "big")
 
 
+def _sample_is_complete(d: Path) -> bool:
+    """Required preprocess outputs exist. Labels: 'gt' for solos,
+    'gt_target' + 'gt_all' for doubles (determined by manifest.json).
+    """
+    manifest_path = d / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception:
+        return False
+    is_double = "target" in manifest and "distractor" in manifest
+    labels = ("gt_target", "gt_all") if is_double else ("gt",)
+    for label in labels:
+        if not (d / f"{label}_rgb.mp4").is_file():
+            return False
+        if not (d / f"{label}_alpha.mkv").is_file():
+            return False
+    try:
+        find_input_file(d)
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def build_splits(data_root: Path, val_frac: float = 0.05) -> tuple[list[Path], list[Path]]:
     """Enumerate sample dirs under data_root/{solos,doubles}/* and split by a
-    deterministic hash of the dir basename. Stable under additions.
+    deterministic hash of the dir basename. Stable under additions. Silently
+    drops dirs missing required files (partial preprocess outputs).
     """
     dirs: list[Path] = []
+    dropped = 0
     for kind in ("solos", "doubles"):
         root = data_root / kind
         if not root.is_dir():
             continue
-        dirs.extend(sorted(p for p in root.iterdir() if p.is_dir()))
+        for p in sorted(root.iterdir()):
+            if not p.is_dir():
+                continue
+            if _sample_is_complete(p):
+                dirs.append(p)
+            else:
+                dropped += 1
+    if dropped:
+        print(f"[dataset] build_splits: dropped {dropped} incomplete sample dirs")
     thresh = int(val_frac * 10000)
     train, val = [], []
     for d in dirs:
@@ -82,18 +117,18 @@ def _load_clip(sample_dir: Path, rng: np.random.Generator, max_frames: int) -> _
     if is_double:
         use_all = rng.random() < 0.5
         kind = "double_all" if use_all else "double_target"
-        gt_path = sample_dir / ("gt_all.mkv" if use_all else "gt_target.mkv")
-        gt_rgba = decode_rgba_ffv1(gt_path, max_frames=max_frames)
+        label = "gt_all" if use_all else "gt_target"
+        gt_rgba = decode_gt_pair(sample_dir, label, max_frames=max_frames)
         # target_alpha always needed (chroma_key_gated). Decode gt_target
         # even in "all" mode — fast since file is local.
         if use_all:
-            tgt = decode_rgba_ffv1(sample_dir / "gt_target.mkv", max_frames=max_frames)
+            tgt = decode_gt_pair(sample_dir, "gt_target", max_frames=max_frames)
             target_alpha = tgt[..., 3]
         else:
             target_alpha = gt_rgba[..., 3]
     else:
         kind = "solo"
-        gt_rgba = decode_rgba_ffv1(sample_dir / "gt.mkv", max_frames=max_frames)
+        gt_rgba = decode_gt_pair(sample_dir, "gt", max_frames=max_frames)
         target_alpha = None
 
     # Align lengths — augment pipeline may drop a frame on encode boundary.
