@@ -56,5 +56,11 @@ class TrainConfig:
     out_dir: Path = Path("runs/v1")
     device: str = "cuda"
 
+    # Weights & Biases
+    wandb_project: str = "sealkey"
+    wandb_entity: str = ""   # empty → default entity
+    wandb_run_name: str = "" # empty → auto
+    wandb_mode: str = "online"  # "online" | "offline" | "disabled"
+
     # Smoke-test rung (0–5); 0 = normal training, see smoke_overfit.py
     rung: int = 0

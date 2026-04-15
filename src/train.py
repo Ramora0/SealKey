@@ -16,8 +16,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 
 from src.configs import TrainConfig
 from src.dataset import SealKeyDataset, build_splits, collate
@@ -178,7 +178,14 @@ def main():
         betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay,
     )
 
-    writer = SummaryWriter(log_dir=str(cfg.out_dir / "tb"))
+    wandb.init(
+        project=cfg.wandb_project,
+        entity=cfg.wandb_entity or None,
+        name=cfg.wandb_run_name or None,
+        mode=cfg.wandb_mode,
+        dir=str(cfg.out_dir),
+        config=asdict(cfg),
+    )
     best_val = float("inf")
     t0 = time.time()
 
@@ -210,18 +217,17 @@ def main():
             print(f"step {step:>7d}  loss {parts['loss'].item():.4f}  "
                   f"α {parts['l_alpha'].item():.4f}  rgb {parts['l_rgb'].item():.4f}  "
                   f"δ {parts['l_delta'].item():.4f}  {it_per_s:.2f} it/s")
-            for k, v in parts.items():
-                writer.add_scalar(f"train/{k}", v.item(), step)
-            writer.add_scalar("train/lr", opt.param_groups[1]["lr"], step)
+            log = {f"train/{k}": v.item() for k, v in parts.items()}
+            log["train/lr"] = opt.param_groups[1]["lr"]
+            wandb.log(log, step=step)
 
         if step > 0 and step % cfg.img_log_every == 0:
             panel = make_panel(batch, pred, n=2)
-            writer.add_image("train/panel", panel, step, dataformats="HWC")
+            wandb.log({"train/panel": wandb.Image(panel)}, step=step)
 
         if step > 0 and step % cfg.val_every == 0:
             vmetrics = validate(model, val_loader, cfg, cfg.val_samples)
-            for k, v in vmetrics.items():
-                writer.add_scalar(f"val/{k}", v, step)
+            wandb.log({f"val/{k}": v for k, v in vmetrics.items()}, step=step)
             primary = vmetrics.get("val/sad_mean", float("inf"))
             print(f"  [val] {vmetrics}")
             if primary < best_val:
@@ -235,7 +241,7 @@ def main():
         step += 1
 
     _save_ckpt(cfg.out_dir / "ckpt" / "last.pt", step, model, opt, cfg, {})
-    writer.close()
+    wandb.finish()
     print("done.")
 
 
