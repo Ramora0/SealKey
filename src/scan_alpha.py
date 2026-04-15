@@ -1,87 +1,84 @@
-"""Quickly scan generated videos for alpha leakage.
+"""Quickly scan generated RGBA clips for alpha leakage.
 
-Shows a random frame composited over a high-frequency, high-contrast
-background so any unintended transparency in the middle of the subject
-is immediately obvious. From the viewer you can keep, throw out, or
-re-encode the video with internal alpha holes filled in.
+Each clip is either a .zip of RGBA PNG frames (what wan_alpha_comfyui writes)
+or a directory of RGBA PNG frames (already-extracted). A random frame is shown
+composited over a high-frequency, high-contrast background so any unintended
+transparency in the middle of the subject is immediately obvious. From the
+viewer you can keep, throw out, or re-encode the clip with internal alpha
+holes filled in.
 
 Keys:
-    n / space / right  next video
-    p / left           previous video
+    n / space / right  next clip
+    p / left           previous clip
     r                  resample a new random frame
     s                  cycle background style
     f                  toggle preview of the hole-fill on the current frame
     k                  keep, advance
     t                  throw out (move to rejected/), advance
-    a                  apply fix to the whole video, save to fixed/, advance
+    a                  apply fix to the whole clip (preview first, then confirm)
     q / esc            quit
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import random
 import shutil
+import zipfile
 from pathlib import Path
 
-import av
 import cv2
 import numpy as np
 
-VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".gif"}
 
-
-def list_videos(root: Path) -> list[Path]:
-    out = []
-    for p in root.rglob("*"):
-        if p.suffix.lower() not in VIDEO_EXTS:
-            continue
-        # skip our own outputs
+def list_clips(root: Path) -> list[Path]:
+    """Return sorted list of clips under `root` — either .zip files or dirs of PNGs."""
+    out: list[Path] = []
+    for p in root.iterdir():
         if "rejected" in p.parts or "fixed" in p.parts:
             continue
-        out.append(p)
+        if p.is_file() and p.suffix.lower() == ".zip":
+            out.append(p)
+        elif p.is_dir():
+            if any(c.suffix.lower() == ".png" for c in p.iterdir()):
+                out.append(p)
     return sorted(out)
 
 
-def decode_frame(path: Path, index: int | None) -> np.ndarray:
-    """Decode a single frame as HxWx4 uint8 RGBA. If index is None, picks random."""
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        stream.thread_type = "AUTO"
-        n = stream.frames or 0
-        target = index if index is not None else (random.randint(0, n - 1) if n > 0 else None)
-        chosen = None
-        for i, frame in enumerate(container.decode(stream)):
-            chosen = frame
-            if target is not None and i >= target:
-                break
-        if chosen is None:
-            raise RuntimeError(f"no frames in {path}")
-        try:
-            return chosen.to_ndarray(format="rgba")
-        except Exception:
-            rgb = chosen.to_ndarray(format="rgb24")
-            alpha = np.full(rgb.shape[:2] + (1,), 255, dtype=np.uint8)
-            return np.concatenate([rgb, alpha], axis=-1)
+def _frame_names(clip: Path) -> list[str]:
+    if clip.suffix.lower() == ".zip":
+        with zipfile.ZipFile(clip) as zf:
+            return sorted(n for n in zf.namelist() if n.lower().endswith(".png"))
+    return sorted(p.name for p in clip.iterdir() if p.suffix.lower() == ".png")
 
 
-def decode_all(path: Path) -> tuple[list[np.ndarray], float]:
-    frames: list[np.ndarray] = []
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        stream.thread_type = "AUTO"
-        fps = float(stream.average_rate) if stream.average_rate else 24.0
-        for frame in container.decode(stream):
-            try:
-                arr = frame.to_ndarray(format="rgba")
-            except Exception:
-                rgb = frame.to_ndarray(format="rgb24")
-                alpha = np.full(rgb.shape[:2] + (1,), 255, dtype=np.uint8)
-                arr = np.concatenate([rgb, alpha], axis=-1)
-            frames.append(arr)
-    if not frames:
-        raise RuntimeError(f"no frames in {path}")
-    return frames, fps
+def _read_png(clip: Path, name: str) -> np.ndarray:
+    if clip.suffix.lower() == ".zip":
+        with zipfile.ZipFile(clip) as zf:
+            data = zf.read(name)
+        arr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+    else:
+        arr = cv2.imread(str(clip / name), cv2.IMREAD_UNCHANGED)
+    if arr is None:
+        raise RuntimeError(f"failed to read PNG {name} from {clip}")
+    if arr.ndim == 2:
+        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGRA)
+    elif arr.shape[2] == 3:
+        arr = cv2.cvtColor(arr, cv2.COLOR_BGR2BGRA)
+    return cv2.cvtColor(arr, cv2.COLOR_BGRA2RGBA)
+
+
+def load_random_frame(clip: Path) -> np.ndarray:
+    names = _frame_names(clip)
+    if not names:
+        raise RuntimeError(f"no PNG frames in {clip}")
+    return _read_png(clip, random.choice(names))
+
+
+def load_all_frames(clip: Path) -> tuple[list[str], list[np.ndarray]]:
+    names = _frame_names(clip)
+    return names, [_read_png(clip, n) for n in names]
 
 
 def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200, edge_dilate: int = 6) -> np.ndarray:
@@ -96,7 +93,7 @@ def fill_internal_holes(alpha: np.ndarray, flood_thresh: int = 200, edge_dilate:
     h, w = alpha.shape
     floodable = (alpha < flood_thresh).astype(np.uint8)
     mask = np.zeros((h + 2, w + 2), np.uint8)
-    mask[1:-1, 1:-1] = 1 - floodable  # pixels >= flood_thresh block the flood
+    mask[1:-1, 1:-1] = 1 - floodable
     canvas = floodable.copy()
     for x in range(w):
         if canvas[0, x] and mask[1, x + 1] == 0:
@@ -156,7 +153,7 @@ def annotate(img: np.ndarray, lines: list[str]) -> np.ndarray:
     return out
 
 
-def render(rgba: np.ndarray, style: int, path: Path, idx: int, total: int,
+def render(rgba: np.ndarray, style: int, clip: Path, idx: int, total: int,
            status: str, preview_fix: bool) -> np.ndarray:
     shown = fix_rgba(rgba) if preview_fix else rgba
     h, w = shown.shape[:2]
@@ -166,14 +163,13 @@ def render(rgba: np.ndarray, style: int, path: Path, idx: int, total: int,
     panel = np.concatenate([comp, alpha_vis], axis=1)
     panel_bgr = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)
     return annotate(panel_bgr, [
-        f"[{idx + 1}/{total}] {path.name}",
+        f"[{idx + 1}/{total}] {clip.name}",
         f"status: {status}   bg-style: {style % 3}   preview-fix: {'on' if preview_fix else 'off'}",
         "n=next p=prev r=resample s=bg f=preview-fix k=keep t=throw a=apply-fix q=quit",
     ])
 
 
-def render_confirm(rgba: np.ndarray, style: int, path: Path) -> np.ndarray:
-    """Side-by-side comparison: original (left) vs fixed (right) on the bg."""
+def render_confirm(rgba: np.ndarray, style: int, clip: Path) -> np.ndarray:
     fixed = fix_rgba(rgba)
     h, w = rgba.shape[:2]
     bg = make_background(h, w, style)
@@ -182,58 +178,57 @@ def render_confirm(rgba: np.ndarray, style: int, path: Path) -> np.ndarray:
     gap = np.full((h, 8, 3), 255, dtype=np.uint8)
     panel = np.concatenate([left, gap, right], axis=1)
     panel_bgr = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)
-    # label columns
     cv2.putText(panel_bgr, "ORIGINAL", (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(panel_bgr, "ORIGINAL", (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(panel_bgr, "FIXED", (w + 18, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
     return annotate(panel_bgr, [
-        f"CONFIRM FIX — {path.name}",
-        "y / enter = apply to whole video   any other key = cancel",
+        f"CONFIRM FIX — {clip.name}",
+        "y / enter = apply to whole clip   any other key = cancel",
         "r = resample a different frame first",
     ])
 
 
-def encode_rgba_webm(frames: list[np.ndarray], fps: float, out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    h, w = frames[0].shape[:2]
-    container = av.open(str(out_path), mode="w")
-    try:
-        stream = container.add_stream("libvpx-vp9", rate=int(round(fps)))
-        stream.width = w
-        stream.height = h
-        stream.pix_fmt = "yuva420p"
-        stream.options = {"crf": "18", "b:v": "0", "auto-alt-ref": "0"}
-        for arr in frames:
-            frame = av.VideoFrame.from_ndarray(arr, format="rgba")
-            frame = frame.reformat(format="yuva420p")
-            for packet in stream.encode(frame):
-                container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
-    finally:
-        container.close()
+def write_fixed_clip(clip: Path, names: list[str], frames: list[np.ndarray], out_root: Path) -> Path:
+    """Write the fixed frames back in the same format as the source (zip or dir)."""
+    out_root.mkdir(parents=True, exist_ok=True)
+    if clip.suffix.lower() == ".zip":
+        dest = out_root / clip.name
+        with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for name, rgba in zip(names, frames):
+                bgra = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+                ok, buf = cv2.imencode(".png", bgra)
+                if not ok:
+                    raise RuntimeError(f"PNG encode failed for {name}")
+                zf.writestr(name, buf.tobytes())
+        return dest
+    dest = out_root / clip.name
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, rgba in zip(names, frames):
+        bgra = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        cv2.imwrite(str(dest / name), bgra)
+    return dest
 
 
 def main() -> None:
     default_dir = Path("/fs/scratch/PAS2836/lees_stuff/sealkey_wan_alpha")
     ap = argparse.ArgumentParser()
     ap.add_argument("directory", type=Path, nargs="?", default=default_dir,
-                    help=f"Folder of videos to scan (default: {default_dir})")
+                    help=f"Folder of clips to scan (default: {default_dir})")
     ap.add_argument("--results", type=Path, default=Path("scan_results.txt"))
     ap.add_argument("--rejected-dir", type=Path, default=None,
-                    help="Where to move thrown-out videos (default: <directory>/rejected)")
+                    help="Where to move thrown-out clips (default: <directory>/rejected)")
     ap.add_argument("--fixed-dir", type=Path, default=None,
-                    help="Where to write hole-filled videos (default: <directory>/fixed)")
+                    help="Where to write hole-filled clips (default: <directory>/fixed)")
     ap.add_argument("--max-width", type=int, default=1200)
     args = ap.parse_args()
 
     rejected_dir = args.rejected_dir or (args.directory / "rejected")
     fixed_dir = args.fixed_dir or (args.directory / "fixed")
 
-    videos = list_videos(args.directory)
-    if not videos:
-        raise SystemExit(f"no videos found under {args.directory}")
+    clips = list_clips(args.directory)
+    if not clips:
+        raise SystemExit(f"no clips (.zip or PNG dirs) found in {args.directory}")
 
     verdicts: dict[str, str] = {}
     if args.results.exists():
@@ -245,15 +240,15 @@ def main() -> None:
     idx = 0
     style = 0
     preview = False
-    rgba = decode_frame(videos[idx], None)
+    rgba = load_random_frame(clips[idx])
 
     win = "alpha-scan"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
     def show() -> None:
-        path = videos[idx]
-        img = render(rgba, style, path, idx, len(videos),
-                     verdicts.get(str(path), "unrated"), preview)
+        clip = clips[idx]
+        img = render(rgba, style, clip, idx, len(clips),
+                     verdicts.get(str(clip), "unrated"), preview)
         if img.shape[1] > args.max_width:
             scale = args.max_width / img.shape[1]
             img = cv2.resize(img, (args.max_width, int(img.shape[0] * scale)),
@@ -262,47 +257,47 @@ def main() -> None:
 
     def advance() -> None:
         nonlocal idx, rgba, preview
-        idx = (idx + 1) % len(videos)
+        idx = (idx + 1) % len(clips)
         preview = False
-        rgba = decode_frame(videos[idx], None)
+        rgba = load_random_frame(clips[idx])
 
     show()
     while True:
         key = cv2.waitKey(0) & 0xFF
-        path = videos[idx]
+        clip = clips[idx]
 
         if key in (ord("q"), 27):
             break
         elif key in (ord("n"), ord(" "), 83):
             advance()
         elif key in (ord("p"), 81):
-            idx = (idx - 1) % len(videos)
+            idx = (idx - 1) % len(clips)
             preview = False
-            rgba = decode_frame(videos[idx], None)
+            rgba = load_random_frame(clips[idx])
         elif key == ord("r"):
-            rgba = decode_frame(path, None)
+            rgba = load_random_frame(clip)
         elif key == ord("s"):
             style += 1
         elif key == ord("f"):
             preview = not preview
         elif key == ord("k"):
-            verdicts[str(path)] = "keep"
+            verdicts[str(clip)] = "keep"
             advance()
         elif key == ord("t"):
             rejected_dir.mkdir(parents=True, exist_ok=True)
-            dest = rejected_dir / path.name
-            shutil.move(str(path), str(dest))
-            verdicts[str(path)] = f"thrown -> {dest}"
-            videos.pop(idx)
-            if not videos:
+            dest = rejected_dir / clip.name
+            shutil.move(str(clip), str(dest))
+            verdicts[str(clip)] = f"thrown -> {dest}"
+            clips.pop(idx)
+            if not clips:
                 break
-            idx %= len(videos)
+            idx %= len(clips)
             preview = False
-            rgba = decode_frame(videos[idx], None)
+            rgba = load_random_frame(clips[idx])
         elif key == ord("a"):
             confirmed = False
             while True:
-                cimg = render_confirm(rgba, style, path)
+                cimg = render_confirm(rgba, style, clip)
                 if cimg.shape[1] > args.max_width:
                     scale = args.max_width / cimg.shape[1]
                     cimg = cv2.resize(cimg, (args.max_width, int(cimg.shape[0] * scale)),
@@ -310,24 +305,23 @@ def main() -> None:
                 cv2.imshow(win, cimg)
                 ckey = cv2.waitKey(0) & 0xFF
                 if ckey == ord("r"):
-                    rgba = decode_frame(path, None)
+                    rgba = load_random_frame(clip)
                     continue
                 confirmed = ckey in (ord("y"), 13, 10)
                 break
             if not confirmed:
                 print("[fix] cancelled")
             else:
-                print(f"[fix] decoding {path.name} ...")
-                frames, fps = decode_all(path)
+                print(f"[fix] loading {clip.name} ...")
+                names, frames = load_all_frames(clip)
                 print(f"[fix] filling holes across {len(frames)} frames ...")
                 fixed = [fix_rgba(f) for f in frames]
-                out_path = fixed_dir / (path.stem + ".webm")
-                print(f"[fix] encoding -> {out_path}")
-                encode_rgba_webm(fixed, fps, out_path)
-                verdicts[str(path)] = f"fixed -> {out_path}"
+                out_path = write_fixed_clip(clip, names, fixed, fixed_dir)
+                print(f"[fix] wrote -> {out_path}")
+                verdicts[str(clip)] = f"fixed -> {out_path}"
                 advance()
 
-        if not videos:
+        if not clips:
             break
         show()
 
